@@ -168,7 +168,21 @@ export function createEditMode({
     write.className = 'narr-row narr-sel cm-write';
     write.setAttribute('role', 'button');
     write.tabIndex = 0;
-    write.textContent = 'write one for me';
+    // Asked of the agent installed on this machine, and only when pressed —
+    // so the button says, before it is pressed, where the changes will go. The
+    // agent is named because it is a real program with a real provider behind
+    // it: most pass what they are given on to their service. With no agent,
+    // or a session started with --no-commit-messages, the button says so
+    // rather than offering what the server can only refuse, and the reason
+    // (which does not fit on a button) goes on the hint line when pressed.
+    const who = state.describer;
+    write.textContent = who ? 'write one for me'
+      : state.subjectsOff ? 'write one for me — off' : 'write one for me — no agent';
+    if (!who) write.classList.add('cm-off');
+    if (who) {
+      write.title = `Sends the deck's uncommitted changes to ${who.name} (${who.label}), the agent installed`
+        + ' on this machine, which may pass them to its provider.';
+    }
     const go = document.createElement('div');
     go.className = 'narr-row narr-sel cm-go';
     go.setAttribute('role', 'button');
@@ -186,8 +200,24 @@ export function createEditMode({
     // being written the box says so where the subject will land, and the
     // button with it — moving, so a slow agent never reads as a stuck window.
     const placeholder = input.placeholder;
+    const HINT = hint.textContent;
+    // the commands in it are set as unbreakable runs: a flag split at its
+    // hyphen across two lines is a command nobody can copy
+    const explainWhyNot = () => {
+      hint.textContent = '';
+      const cmd = (t) => { const c = document.createElement('span'); c.className = 'cm-cmd'; c.textContent = t; return c; };
+      if (state.subjectsOff) {
+        hint.append('this session was started with ', cmd('--no-commit-messages'), ' — restart without it to have one written');
+      } else {
+        hint.append('no agent is installed on this machine to write one — ', cmd('decklight doctor'), ' lists the ones it can use');
+      }
+      hint.classList.add('cm-why');
+    };
     const ask = async () => {
+      if (!who) { explainWhyNot(); return; }
       if (commitAsking) return;
+      hint.textContent = HINT;
+      hint.classList.remove('cm-why');
       commitAsking = true;
       write.classList.add('cm-thinking');
       const stop = thinking((text) => {
@@ -202,7 +232,13 @@ export function createEditMode({
         if (j.subject && !input.value.trim()) input.value = j.subject;
         write.textContent = j.subject ? 'write another' : 'nothing to say about it';
       } catch (e) {
-        if (commitEl) write.textContent = `couldn't — ${String(e.message || e).slice(0, 40)}`;
+        // the whole sentence, where there is room for it — a reason cut at forty
+        // characters on a button is a reason nobody can act on
+        if (commitEl) {
+          write.textContent = "couldn't write one";
+          hint.textContent = String(e.message || e);
+          hint.classList.add('cm-why');
+        }
       } finally {
         stop();
         write.classList.remove('cm-thinking');
@@ -211,7 +247,7 @@ export function createEditMode({
       }
     };
     write.addEventListener('click', ask);
-    if (state.messages) ask();     // pre-generated when the option is on
+    if (state.messages && who) ask();   // drafted on open only with --commit-messages
 
     const commit = async () => {
       const message = input.value.trim();
