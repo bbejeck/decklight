@@ -27,6 +27,10 @@
  *                    stylesheet with each relative url() as a data: URI, its
  *                    meta and its layouts, the blocks every server injects
  *                    (SPEC DESIGN_SYSTEMS), so layouts expand from file://.
+ *   - audio        : with --audio, every recorded narration file (a track's
+ *                    folder, a local manifest's files) as a data: URI the
+ *                    runtime plays in place of the path; `--audio aac|opus`
+ *                    re-encodes each small first. Off by default.
  *   - fonts        : every font package the deck references ("fonts") — its
  *                    faces as data: URIs in @font-face rules, and its meta
  *                    (SPEC FONTS), so the type is the same from file://.
@@ -49,6 +53,7 @@ import { bundleFont, fontRefs, fontVerdict, resolveFontRef } from './font-refs.m
 import { MarketplaceError } from './marketplace.mjs';
 import { escapeHtml } from '../tools/escape.mjs';
 import { isMain } from '../tools/args.mjs';
+import { AUDIO_CHOICES, CODECS, estimateAudio, inlineAudio, narrationAudio, sizeLabel } from './bundle-audio.mjs';
 import { injectBeforeBodyEnd } from '../tools/deck-html.mjs';
 
 const fail = makeFail('bundle');
@@ -200,13 +205,13 @@ function mergeDecks(jobs, baseDir, notices) {
 // ---------------------------------------------------------------- arguments
 
 /** `client` is the sigstore seam — see publishMain; omitted, the real one is used. */
-export async function bundleMain(argv = process.argv.slice(2), { client } = {}) {
+export async function bundleMain(argv = process.argv.slice(2), { client, estimate = false } = {}) {
 
 if (!argv.length || argv.includes('--help') || argv.includes('-h')) {
   process.stdout.write(`decklight bundle — flatten deck(s) into one self-contained HTML file
 
 Usage:
-  decklight bundle <deck.html> [-o out.html] [--sign] [--deck] [--themes current|all|…]
+  decklight bundle <deck.html> [-o out.html] [--audio [original|aac|opus]] [--sign] [--deck] [--themes current|all|…]
   decklight bundle <deck.html> --all [-o out.html] [--title "…"] [--themes …]
   decklight bundle <a.html> <b.html> … [-o out.html] [--title "…"] [--themes …]
 
@@ -240,6 +245,17 @@ Options:
                    well, whichever you choose
   --theme <name>   the theme the bundle opens on — a shipped theme (embedded
                    alongside the others) or one the deck marks
+  --audio [how]    carry the narration's recorded audio inside the file, so
+                   it plays from disk with nothing beside it:
+                     original      the files as recorded (the default)
+                     aac           mono AAC at 32 kbps, ~4 KB a second of
+                                   voice, plays in every browser
+                     opus          mono Opus at 24 kbps, ~3 KB a second,
+                                   the smallest (Safari from 17)
+                   aac and opus need ffmpeg and cost some quality. Off by
+                   default: a talk's audio is tens of MB, so it stays beside
+                   the deck and the bundle names the folder to send with it
+                   (--no-audio says so explicitly)
   --allow-missing-design-systems
                    bundle even when a design system the deck uses cannot be
                    read on this machine: it is left out, and the slides that
@@ -256,6 +272,7 @@ const inputs = [];
 let outPath = null, themesSel = 'current', all = false, mergedTitle = null, sign = false, deckFile = false, openOn = null;
 let allowMissingSystems = false;
 let allowMissingFonts = false;
+let audioChoice = null;
 const transformNames = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -272,6 +289,9 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--title') mergedTitle = argv[++i];
   else if (a === '--allow-missing-design-systems') allowMissingSystems = true;
   else if (a === '--allow-missing-fonts') allowMissingFonts = true;
+  // `--audio` alone is the files as recorded; a codec after it re-encodes them
+  else if (a === '--audio') audioChoice = AUDIO_CHOICES.includes(argv[i + 1]) ? argv[++i] : 'original';
+  else if (a === '--no-audio') audioChoice = null;
   else if (!a.startsWith('-')) inputs.push(a);
   else fail(`unknown argument: ${a}`);
 }
@@ -718,6 +738,31 @@ html = html.replace(
   if (n) notices.push(`narration: inlined ${n} voice manifest(s) — the audio stays in its bucket`);
 }
 
+// ------------------------------------------------------ narration audio
+
+// A recorded track's audio is the one part of a deck too big to carry by
+// default: a slide's clip is half a megabyte to a few, a talk's worth tens,
+// and base64 adds a third. So it stays beside the deck unless asked for:
+// `--audio` carries it inside as recorded, `--audio aac` / `--audio opus`
+// re-encoded small (cli/bundle-audio.mjs). Either way the bundle says which
+// files it left out or took in.
+let audioEstimate = null;
+{
+  const { found, remote, folders } = narrationAudio(html, deckDir);
+  if (estimate) {
+    if (found.size) audioEstimate = { ...(await estimateAudio(found)), folders };
+  } else if (found.size && audioChoice) {
+    let carried;
+    try { carried = await inlineAudio(found, audioChoice); } catch (e) { fail(e.message); }
+    embeds.push(...carried.blocks);
+    notices.push(`narration audio: inlined ${found.size} file(s), ${sizeLabel(carried.bytes)}`
+      + `${CODECS[audioChoice] ? ` (re-encoded from ${sizeLabel(carried.before)}, ${CODECS[audioChoice].label})` : ''}, from ${folders}`);
+  } else if (found.size) {
+    notices.push(`narration audio: ${found.size} file(s) stay beside the deck, in ${folders} — ship them next to the bundle, or bundle with --audio [original|aac|opus] to carry them inside`);
+  }
+  if (remote && audioChoice) notices.push(`narration audio: ${remote} manifest file(s) live at a URL and stay there`);
+}
+
 // -------------------------------------------------------- design systems
 
 // The stylesheets where every server links them — the end of <head>, after
@@ -768,6 +813,10 @@ if (!jobs) {
 // (INTEGRITY#SIGNING): a failed signature must leave no artifact behind, or
 // the unsigned file sitting there afterwards gets picked up later and sent as
 // though it were finished. Bytes, not a path, for exactly this reason.
+// An estimate (the author server's bundle card) stops here: the file as it
+// would be without its audio, and what each way of carrying the audio adds.
+if (estimate) return { base: Buffer.byteLength(html, 'utf8'), audio: audioEstimate };
+
 let bundleSig = null;
 if (sign) {
   const { signBytes } = await import('./sign.mjs');
