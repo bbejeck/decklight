@@ -874,19 +874,41 @@ export function createEditMode({
   let unmountEditor = null;
   let notesFollow = null;   // re-points a clean notes card at the slide on screen
   let notesReadOnly = false; // the card opened with no author server behind it
+  // A DRAWER, not a dialog: the notes open docked along the bottom, the deck
+  // stays navigable above them, and they save themselves (below). The dock
+  // buttons still move it anywhere, remembered per deck.
   const notesDock = createDock({
     root,
     reflow: () => instance._reflow?.(),
     key: 'decklight-notes-dock:' + location.pathname,
     getEl: () => editEl,
     closeLabel: 'close (esc)',
+    defaultMode: 'bottom',
   });
+  let notesDirty = null;     // does the open card hold edits the file does not have?
+  let notesDrafted = null;   // …and are they an agent's draft, to be read before they are written?
+  let notesClosing = false;  // a close that is saving first
   // Docked, the deck stays navigable beside the notes card, so the card
   // follows the slide — but only while it holds nothing unsaved: a draft
   // stays with the slide it was written for, and its heading still says which.
   instance.on('slide', () => notesFollow?.());
   function toggleEditor() {
-    if (editEl) { unmountEditor(); editEl = null; unmountEditor = null; notesFollow = null; notesSave = null; notesRefresh = null; forgetNotesOpen(); return; }
+    if (editEl) {
+      // A card holding edits saves them on the way out, and closes once they
+      // are written; a save that fails leaves it open, still marked unsaved,
+      // because closing would be the one way to lose what was typed.
+      if (notesSave && notesDirty?.() && notesDrafted?.()) {
+        toast('the agent\'s draft is unsaved — ⌘⏎ saves it, ↺ reset drops it', 4200);
+        return;
+      }
+      if (!notesClosing && notesSave && notesDirty?.()) {
+        notesClosing = true;
+        notesSave().then(() => { notesClosing = false; if (editEl && !notesDirty?.()) toggleEditor(); });
+        return;
+      }
+      unmountEditor(); editEl = null; unmountEditor = null; notesFollow = null; notesSave = null; notesRefresh = null; notesDirty = null; notesDrafted = null; forgetNotesOpen();
+      return;
+    }
     // With no author server behind the deck — `present`, `review`, a file —
     // the same card opens READ-ONLY: the notes to read, following the slide,
     // and nothing that could look like it saves. `decklight author` edits them.
@@ -894,7 +916,7 @@ export function createEditMode({
     let sl = instance.state.slide;
     const heading = () => (readOnly
       ? `notes — slide ${sl} · read-only (decklight author edits them)`
-      : `edit notes — slide ${sl} · ⌘⏎ saves`);
+      : `notes — slide ${sl} · saves itself`);
     const { el, card, title } = typingCard('notes', notesDock, heading(), toggleEditor);
     editEl = el;
     const ta = document.createElement('textarea');
@@ -908,8 +930,20 @@ export function createEditMode({
     if (readOnly) ta.classList.add('edit-notes-readonly');
     let syncChanged = () => {};   // the reset / before-after buttons, once they exist (not read-only)
     let saving = false;           // a save in flight: the mark says "saving…" 
+    let drafted = false;          // the box holds an agent's draft, to be read before it is written
+    if (!readOnly) notesDirty = () => ta.value !== loaded;
+    if (!readOnly) notesDrafted = () => drafted;
     notesFollow = () => {
-      if (ta.value !== loaded || instance.state.slide === sl) return;
+      if (instance.state.slide === sl) return;
+      // Edits go to the slide they were written for, and the card moves on
+      // once they are written. A save that fails leaves it where it was,
+      // marked unsaved, with the slide it belongs to in its heading.
+      if (ta.value !== loaded) {
+        // …but an agent's draft stays with the slide it was drafted for,
+        // unwritten, until it has been read
+        if (!readOnly && !saving && !drafted) save().then(() => { if (ta.value === loaded) notesFollow?.(); });
+        return;
+      }
       sl = instance.state.slide;
       loaded = ta.value = notesText();
       title.textContent = heading();
@@ -941,6 +975,7 @@ export function createEditMode({
         if (j.changed === false) {
           forgetNotesOpen();   // no reload is coming
           saving = false;
+          drafted = false;
           loaded = ta.value;
           syncChanged();
           toast('nothing to save — the notes already match the file', 2600);
@@ -950,6 +985,7 @@ export function createEditMode({
         // written, and IN PLACE: no reload is coming (the server sends every
         // page the new notes instead), so the card simply stays as it is
         saving = false;
+        drafted = false;
         loaded = ta.value;
         if (j.inPlace) forgetNotesOpen();
         syncChanged();
@@ -975,12 +1011,23 @@ export function createEditMode({
       unmountEditor = mountTypingCard(el, notesDock);
       return;
     }
+    // Leaving the card saves it: a press on the slide, or the window losing
+    // focus to another. Not a focus event: the card's own machinery drops
+    // focus all the time (a button disabled while drafting, the box hidden
+    // behind the before/after view), and none of that is the author leaving.
+    // An agent's draft is never saved this way (`drafted`): it landed in the
+    // box to be read, and only ⌘⏎ or the button writes it.
+    const leaving = () => { if (!saving && !drafted && ta.value !== loaded) save(); };
+    const onPress = (e) => { if (!el.contains(e.target)) leaving(); };
+    root.addEventListener('pointerdown', onPress, true);
+    window.addEventListener('blur', leaving);
+    const unmountLeaving = () => { root.removeEventListener('pointerdown', onPress, true); window.removeEventListener('blur', leaving); };
     const actions = document.createElement('div');
     actions.className = 'tr-actions';
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'narr-prev-btn';
-    btn.textContent = '💾 save to file';
+    btn.textContent = '💾 save now';
     btn.addEventListener('click', save);
     actions.appendChild(btn);
     // ↺ reset and ⇄ before / after: both against the notes AS LAST SAVED
@@ -1027,7 +1074,8 @@ export function createEditMode({
     };
     // ● unsaved beside the heading while the box differs from the file —
     // at full strength, the heading itself dimmed — and saving… in flight
-    const mark = Object.assign(document.createElement('span'), { className: 'notes-dirty-mark' });
+    const mark = Object.assign(document.createElement('span'), { className: 'notes-dirty-mark',
+      title: 'saved when you leave the box, move to another slide, or close the card — ⌘⏎ saves now' });
     title.after(mark);
     syncChanged = () => {
       const changed = ta.value !== loaded;
@@ -1039,6 +1087,7 @@ export function createEditMode({
     };
     resetBtn.addEventListener('click', () => {
       ta.value = loaded;
+      drafted = false;
       diffBtn.classList.remove('notes-fresh');
       showDiff(false);
       syncChanged();
@@ -1050,7 +1099,7 @@ export function createEditMode({
       else if (e.key === 'Escape') { showDiff(false); e.preventDefault(); }
       e.stopPropagation();
     });
-    ta.addEventListener('input', syncChanged);
+    ta.addEventListener('input', () => { drafted = false; syncChanged(); });   // typed into, the draft is the author's own
     actions.append(resetBtn, diffBtn);
     showDiff(false);
     syncChanged();
@@ -1091,6 +1140,7 @@ export function createEditMode({
           if (!j.changed) toast(`${j.label || j.agent} ${b.none}`, 3200);
           else {
             ta.value = j.text;
+            drafted = true;
             syncChanged();
             // fresh: the button that shows what just changed, lit until looked at
             diffBtn.classList.add('notes-fresh');
@@ -1150,7 +1200,8 @@ export function createEditMode({
       }
     }
     card.append(ta, diffEl, actions);
-    unmountEditor = mountTypingCard(el, notesDock);
+    const unmountCard = mountTypingCard(el, notesDock);
+    unmountEditor = () => { unmountCard(); unmountLeaving(); };
     setTimeout(() => ta.focus(), 0);
   }
 
