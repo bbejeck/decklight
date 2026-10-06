@@ -6,7 +6,7 @@
  * distributes that is not a theme or a plugin (MARKETPLACE.md `UNITS`).
  *
  * `MARKETPLACES#CORE` registers catalogs and resolves a name to an entry;
- * `THEME_BROWSE#UI` and `PRESENT#PLUGINS` each installed one kind of thing on
+ * `THEME_BROWSE#UI` and `READ_ONLY#PLUGINS` each installed one kind of thing on
  * top of it. This is the rest — deck templates, agent skills, import adapters
  * — and it is deliberately ONE implementation with a type table rather than
  * three commands that each grew their own copy of resolve-fetch-validate-write.
@@ -127,7 +127,7 @@ export const UNIT_TYPES = {
     single: 'json',
     reference: true,
     label: 'AI agent',
-    use: 'A, author mode',
+    use: 'A, write mode',
     example: 'my-agent',
     note: 'An agent unit is a DESCRIPTOR — which command to run and how to run it\n  headlessly. Installing one fetches nothing; you install the agent itself the\n  way its own docs say, and this only teaches decklight how to call it.',
     required: ['bin', 'args'],
@@ -144,7 +144,7 @@ export const UNIT_TYPES = {
     single: 'json',
     reference: true,
     label: 'voice',
-    use: 'the V picker, author mode',
+    use: 'the V picker, write mode',
     example: 'narrator-anna',
     note: 'A voice is a REFERENCE — which engine, which of its voices. Installing\n  one writes a pointer and fetches nothing, so this is the one add that works\n  offline; speaking through it still needs that engine and your own credential.',
     required: ['engine', 'voiceId'],

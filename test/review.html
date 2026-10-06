@@ -126,7 +126,7 @@
 
     try {
       localStorage.setItem('decklight-onboarded', '1');
-      localStorage.setItem('decklight-onboarded-author', '1');   // nor the editing tour, which takes the first key
+      localStorage.setItem('decklight-onboarded-tour', '1');   // nor the editing tour, which takes the first key
       localStorage.setItem('decklight-tips-off', '1');
     } catch (e) { /* private mode */ }
   </script>
@@ -442,13 +442,13 @@
           return;
         }
 
-        if (mode === 'author') {
+        if (mode === 'write') {
           // An author: the panel writes for them too (a note to self, as ⇧M
           // always could), and R resolves — armed, then confirmed.
           press('m');
           const card = await until(() => document.querySelector('.decklight-review .narr-card'));
           await until(() => card.querySelectorAll('.rv-row').length >= 2);
-          r.authorCanWrite = !!(await until(() => card.querySelector('.rv-compose .rv-input')));
+          r.editCanWrite = !!(await until(() => card.querySelector('.rv-compose .rv-input')));
           r.saysResolveIsThere = /R marks one done/.test(card.querySelector('.rec-hint')?.textContent ?? '');
           // what reviewers sent, above the local list — the COMMENTS
           // list — the COMMENTS, not a count and a git command
@@ -522,7 +522,7 @@
           r.enterDidNotCloseOrJump = !!document.querySelector('.decklight-review');
           r.resolveIsAnAppend = !!window.__posted[0]?.re;
 
-          r.PASS = r.authorCanWrite && r.saysResolveIsThere && r.armedNotFired
+          r.PASS = r.editCanWrite && r.saysResolveIsThere && r.armedNotFired
             && r.nothingPostedYet && r.escapeDisarmedNotClosed && r.resolvedOnSecond
             && r.enterDidNotCloseOrJump && r.resolveIsAnAppend && r.incomingShown
             && r.incomingSaysWhoAndHowMany && r.incomingShowsTheComments && r.noGitCommandAsked

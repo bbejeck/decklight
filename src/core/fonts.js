@@ -63,7 +63,7 @@ export function createFonts({
 }) {
   const key = 'decklight-font:' + location.pathname;
   const authoring = () => editmode?.()?.available() === true;
-  const authorBase = () => editmode?.()?.base() ?? '';
+  const editBase = () => editmode?.()?.base() ?? '';
   let offered = [];        // authoring: { id, label, stack, family, faces, qualified, used, kind: 'offered' }
   let offeredState = null; // null · { loading } · { error } · { done }
   const stacks = STACKS.map(([label, stack]) => ({ id: label, label, stack, kind: 'stack' }));
@@ -77,11 +77,11 @@ export function createFonts({
   let currentId = 'theme default';
   const find = (id) => list().find((f) => f.id === id);
 
-  /** An offered font's faces, linked into THIS page so it can be previewed (the author server answers them). */
+  /** An offered font's faces, linked into THIS page so it can be previewed (the edit server answers them). */
   function ensureFaces(f) {
     if (f.kind !== 'offered' || document.querySelector(`style[data-font-preview="${CSS.escape(f.id)}"]`)) return;
     const rules = (f.faces ?? []).filter((x) => FACE_URL_RE.test(x.url)).map((x) =>
-      `@font-face { font-family: '${f.family}'; src: url("${authorBase()}/${x.url}") format("${x.format === 'woff' ? 'woff' : 'woff2'}"); `
+      `@font-face { font-family: '${f.family}'; src: url("${editBase()}/${x.url}") format("${x.format === 'woff' ? 'woff' : 'woff2'}"); `
       + `font-weight: ${/^\d{1,4}( \d{1,4})?$/.test(String(x.weight)) ? x.weight : 400}; font-style: ${x.style === 'italic' ? 'italic' : 'normal'}; font-display: swap; }`);
     const st = document.createElement('style');
     st.dataset.fontPreview = f.id;
@@ -134,9 +134,9 @@ export function createFonts({
     if (!authoring() || offeredState) return;
     offeredState = { loading: true };
     try {
-      const r = await fetch(authorBase() + '/edit/font/browse');
+      const r = await fetch(editBase() + '/edit/font/browse');
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.ok) throw new Error(j.error || `the author server said ${r.status}`);
+      if (!r.ok || !j.ok) throw new Error(j.error || `the edit server said ${r.status}`);
       offered = (j.fonts ?? []).filter((f) => !f.missing && FAMILY_RE.test(f.family ?? '') && STACK_RE.test(f.stack ?? ''))
         .map((f) => ({ id: f.name, label: f.title || f.family, stack: f.stack, family: f.family, faces: f.faces ?? [], qualified: f.qualified, used: !!f.used, group: f.group, kind: 'offered' }));
       offeredState = { done: true, unfetched: j.unfetched ?? [], stale: j.stale ?? [] };
@@ -250,12 +250,12 @@ export function createFonts({
     const f = rows[sel];
     if (!authoring() || !f || f.kind !== 'offered') return false;
     try {
-      const r = await fetch(authorBase() + '/edit/font/mark', {
+      const r = await fetch(editBase() + '/edit/font/mark', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ref: f.qualified, used: !f.used, quiet: true }),
       });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.ok) throw new Error([j.error, ...(j.problems ?? []).slice(0, 1)].filter(Boolean).join(' · ') || `the author server said ${r.status}`);
+      if (!r.ok || !j.ok) throw new Error([j.error, ...(j.problems ?? []).slice(0, 1)].filter(Boolean).join(' · ') || `the edit server said ${r.status}`);
       f.used = j.used;
       toast(j.used ? `● the deck now uses ${j.ref} — its faces travel with it (bundle carries them) · Z takes it back`
         : `○ dropped ${j.ref}`, 3600);

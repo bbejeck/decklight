@@ -29,9 +29,9 @@
  * file is only touched with --force.
  *
  * init ends like the start of an authoring session: outside a repository it
- * offers `git init` (the same question `decklight author` asks, at the natural
+ * offers `git init` (the same question `decklight <deck>` asks, at the natural
  * moment — the repo starts with the shared starter .gitignore), prints an
- * accent-colored epilogue — the deck's file:// URL and the `decklight author`
+ * accent-colored epilogue — the deck's file:// URL and the `decklight <deck>`
  * line, which is the command that starts editing. `--open` launches the deck
  * in the default browser (the file IS the presentation).
  */
@@ -172,7 +172,7 @@ export async function resolveTitle(arg, { isTTY = false, ask } = {}) {
 }
 
 // ── git: offer the repository at the natural moment ─────────────────────────
-// The same policy `decklight author` applies later, decided here as a pure
+// The same policy `decklight <deck>` applies later, decided here as a pure
 // function so the table (--git / --no-git / TTY / repo-present) is testable
 // without a repository or a terminal.
 export function planGit({ args = [], tty = false, inRepo = false } = {}) {
@@ -366,7 +366,7 @@ function starterDeck(title, themeNames, activeTheme, { inline = false } = {}) {
   title = escapeHtml(title); // a prompt invites &, < and quotes
   // The deck is DATA (#520): slides, plus one JSON block holding its
   // configuration and the version it was written for. No runtime in the file
-  // — `author`, `present` and every render reference the installed one on
+  // — `open`, `--read-only` and every render reference the installed one on
   // the way out, and `bundle` embeds it at hand-over. A few KB of slides, a
   // git history that is only slides, and nothing in the file that executes.
   // `--inline` is the self-contained scaffold: double-clickable, pinned to
@@ -453,8 +453,8 @@ export async function initMain(argv = process.argv.slice(2), { hasBin = onPath, 
 
 Usage:
   decklight init ["Deck Title"] [-o deck.html] [--dir path] [--inline [--themes …]]
-                 [--from <template>] [--git | --no-git] [--open] [--force]
-                 [--no-skill | --global-skill] [--author | --no-author]
+                 [--from <template>] [--git | --no-git] [--no-open] [--force]
+                 [--no-skill | --global-skill]
 
 Options:
   -o <file>       deck output path (default: deck.html)
@@ -470,7 +470,7 @@ Options:
                   opens from disk without decklight — pinned to this version,
                   ~650 KB before the first slide. The default is slides plus
                   a JSON configuration block and no runtime in the file:
-                  author/present serve the installed runtime into it, and
+                  decklight serves the installed runtime into it, and
                   \`decklight bundle\` embeds it when the deck is handed over.
   --themes <sel>  with --inline, which themes to embed:
                     all           every shipped theme (default)
@@ -480,14 +480,15 @@ Options:
                   commit everything init wrote
                   (outside a repo + no flag: init ASKS on a TTY)
   --no-git        never touch git
-  --open          open the scaffolded deck in your default browser
-                  (a self-contained --inline deck is the presentation; the
-                  default deck plays through decklight — see --author)
-  --author        go straight into author mode once the deck is written —
-                  live reload, edits from the browser, an AI agent on A —
-                  and open it there. On a terminal init ASKS this; --author
-                  answers yes without asking, --no-author answers no.
-  --no-author     scaffold and stop; print the command instead
+  --no-open       start the deck without opening the browser. Once the deck
+                  is written, init opens it: the default deck in write mode
+                  (live reload, edits from the browser, an AI agent on A), a
+                  self-contained --inline deck as a file in your browser.
+                  --no-open starts the write-mode server and leaves the
+                  browser to you. Off a terminal init only prints the
+                  command (a server nobody can stop is never started), and
+                  opens a self-contained deck's file only when --open is
+                  typed.
   --force         overwrite an existing deck file (default: refuses)
   --no-skill      skip the agent skill entirely (project and global), and the
                   where-should-it-go question with it
@@ -511,7 +512,7 @@ unless --no-skill is given. The deck file is only touched with --force.
     return 0;
   }
 
-  let title = null, outFile = 'deck.html', dir = '.', force = false, themesSel = 'all', openAfter = false, inline = false;
+  let title = null, outFile = 'deck.html', dir = '.', force = false, themesSel = 'all', inline = false;
   let from = null;
   const args = [...argv];
   for (let i = 0; i < args.length; i++) {
@@ -522,8 +523,7 @@ unless --no-skill is given. The deck file is only touched with --force.
     else if (a === '--themes') themesSel = args[++i];
     else if (a === '--inline') inline = true;
     else if (a === '--force') force = true;
-    else if (a === '--open') openAfter = true;
-    else if (a === '--author' || a === '--no-author') ; // the handoff question, below
+    else if (a === '--open' || a === '--no-open') ; // the handoff, below (--open is the default)
     else if (a === '--no-skill' || a === '--global-skill') ; // consumed by planSkill below
     else if (a === '--git' || a === '--no-git') ; // consumed by planGit below
     else if (a === '--remote') i++;                // consumed by planRemote below
@@ -714,39 +714,33 @@ unless --no-skill is given. The deck file is only touched with --force.
 
   process.stdout.write(epilogue({ deckPath, tty: !!process.stdout.isTTY, noColor: !!process.env.NO_COLOR }));
 
-  // ── the handoff: author mode, offered ──────────────────────────────────────
-  // The epilogue names the command. On a terminal init also offers to run it,
-  // because the deck opened as a FILE is one where E, A and L all answer
-  // "needs decklight author": the newcomer's first three keystrokes hit the one
-  // command they have not seen yet. A question with a default, not an action:
-  // Enter goes, `n` keeps init out of the way, and a run that cannot answer —
-  // no TTY, or stdin closed under it — never has a server started for it.
-  // Everything init printed stays on screen above author's banner.
-  let handoff = argv.includes('--author') ? 'yes' : argv.includes('--no-author') || !tty ? 'no' : 'ask';
-  if (handoff === 'ask') {
-    const a = (await question('  open it in author mode now — live reload, edits from the browser? [Y/n] ')).trim();
-    handoff = (stdinGone && !a) || /^n/i.test(a) ? 'no' : 'yes';
-  }
+  // ── the handoff: the deck opens ───────────────────────────────────────────
+  // The epilogue names the command, and on a terminal init runs it, because
+  // the deck opened as a FILE is one where E, A and L all answer "needs
+  // decklight <deck>": the newcomer's first three keystrokes would hit the one
+  // command they have not seen yet. `--no-open` keeps the browser closed and
+  // nothing else: the server still starts. A run that is not on a terminal —
+  // a script, an agent, CI — never has a server started for it, since nobody
+  // is there to stop one; the epilogue is the whole handoff there. Everything
+  // init printed stays on screen above the deck's banner.
   rl?.close();
-  if (handoff === 'yes') {
-    const rel = path.relative(root, deckPath);
-    const cli = fileURLToPath(new URL('./decklight.mjs', import.meta.url));
-    // the banner has been printed once, by this run; the child is the same version
-    const r = spawnSync(process.execPath, [cli, rel, '--open'],
-      { stdio: 'inherit', cwd: root, env: { ...process.env, DECKLIGHT_BANNER: '1' } });
-    return r.status ?? 0;
+  const noOpen = argv.includes('--no-open');
+  // A self-contained --inline deck (or one from a template) IS the
+  // presentation: there is no server to hand it to, so it opens as a file —
+  // last of the writes, so every "created/wrote" line is on screen before
+  // the browser steals focus. Off a terminal only a typed --open opens it:
+  // a browser nobody asked for is not what a script wants.
+  if (inline || from) {
+    if (!noOpen && (tty || argv.includes('--open'))) await openDeck(deckPath);
+    return undefined;
   }
-
-  // last of the writes, so every "created/wrote" line is on screen before the
-  // browser steals focus; opens the deck FILE, not a served URL. A
-  // self-contained deck is the presentation; the default deck is slides plus
-  // a configuration block (#520) and plays through decklight, so the file
-  // alone shows unstyled slides — said before the tab opens, with the command
-  // that plays it.
-  if (openAfter && !inline && !from) {
-    note('  --open: this deck plays through decklight — as a file it is unstyled slides; `decklight deck.html` plays it');
-  }
-  if (openAfter) await openDeck(deckPath);
+  if (!tty) return undefined;
+  const rel = path.relative(root, deckPath);
+  const cli = fileURLToPath(new URL('./decklight.mjs', import.meta.url));
+  // the banner has been printed once, by this run; the child is the same version
+  const r = spawnSync(process.execPath, [cli, rel, ...(noOpen ? [] : ['--open'])],
+    { stdio: 'inherit', cwd: root, env: { ...process.env, DECKLIGHT_BANNER: '1' } });
+  return r.status ?? 0;
 }
 
 if (isMain(import.meta.url)) process.exitCode = await runMain('init', initMain);

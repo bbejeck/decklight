@@ -4,7 +4,7 @@
 // Editing a design-system slide in the FILE (SPEC DESIGN_SYSTEMS, #624): the
 // guard that keeps an element in its slot, and the layout picker's writes —
 // convert, switch, remove, insert — as pure transforms, then through the
-// author server with its one undo.
+// edit server with its one undo.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -86,7 +86,7 @@ test('the guard: an edit on a design-system slide keeps the element\'s slot — 
   assert.equal(slotWriteProblem(deck(PLAIN), 1, 0, '<h2>x</h2>'), null, 'a plain slide is not guarded');
 });
 
-// ── through the author server ─────────────────────────────────────────────
+// ── through the edit server ─────────────────────────────────────────────
 
 function home(t) {
   const dir = scratch('ds-edit', t);
@@ -101,7 +101,7 @@ function home(t) {
   return h;
 }
 
-async function startAuthor(t, h, body) {
+async function startEditingTour(t, h, body) {
   const dir = scratch('ds-edit-author', t);
   writeFileSync(path.join(dir, 'deck.html'), body);
   const proc = spawn(process.execPath, [path.join(ROOT, 'cli/edit.mjs'), 'deck.html', '--port', '0', '--no-git'], {
@@ -113,7 +113,7 @@ async function startAuthor(t, h, body) {
   proc.stderr.on('data', (c) => { out += c; });
   const base = await new Promise((resolve, reject) => {
     const scan = setInterval(() => { const m = out.match(/http:\/\/127\.0\.0\.1:(\d+)/); if (m) { clearInterval(scan); resolve(`http://127.0.0.1:${m[1]}`); } }, 25);
-    proc.on('exit', () => { clearInterval(scan); reject(new Error(`author exited early:\n${out}`)); });
+    proc.on('exit', () => { clearInterval(scan); reject(new Error(`open exited early:\n${out}`)); });
     setTimeout(() => { clearInterval(scan); reject(new Error(`timeout:\n${out}`)); }, 10000);
   });
   return { base, deck: path.join(dir, 'deck.html') };
@@ -122,7 +122,7 @@ const post = async (base, route, body) => { const r = await fetch(`${base}${rout
 
 test('POST /edit/slide/system-layout: convert, switch, insert and remove — each one undo, the layout read from the package', async (t) => {
   const h = home(t);
-  const { base, deck: deckPath } = await startAuthor(t, h, deck(PLAIN));
+  const { base, deck: deckPath } = await startEditingTour(t, h, deck(PLAIN));
   const original = readFileSync(deckPath, 'utf8');
   const convert = await post(base, '/edit/slide/system-layout', { slide: 1, layout: 'acme/section-divider' });
   assert.equal(convert.status, 200, JSON.stringify(convert));
@@ -148,7 +148,7 @@ test('POST /edit/slide/system-layout: convert, switch, insert and remove — eac
 test('POST /edit/element/content refuses a write that drops data-slot on a design-system slide', async (t) => {
   const h = home(t);
   const converted = applySystemLayout(deck(PLAIN), 1, DIVIDER).html;
-  const { base, deck: deckPath } = await startAuthor(t, h, converted);
+  const { base, deck: deckPath } = await startEditingTour(t, h, converted);
   const refused = await post(base, '/edit/element/content', { slide: 1, index: 0, html: '<h2>Lost its slot</h2>' });
   assert.equal(refused.status, 409);
   assert.match(refused.error, /keep data-slot="title"/);

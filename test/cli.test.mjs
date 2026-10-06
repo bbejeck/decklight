@@ -239,7 +239,7 @@ test('init HTML-escapes the title where it lands (<title> and the h1)', () => {
 
 test('init without a title never prompts when stdio is not a TTY', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'decklight-init-'));
-  const r = spawnSync('node', [CLI, 'init', '--dir', dir, '--no-skill'], { encoding: 'utf8', input: '' });
+  const r = spawnSync('node', [CLI, 'init', '--dir', dir, '--no-skill'], { encoding: 'utf8', timeout: 60_000, input: '' });
   assert.equal(r.status, 0);
   assert.doesNotMatch(r.stdout + r.stderr, /deck title/);
   assert.match(fs.readFileSync(path.join(dir, 'deck.html'), 'utf8'), /<title>My Deck<\/title>/);
@@ -252,11 +252,13 @@ const ptySkip = process.platform === 'linux' && fs.existsSync('/usr/bin/script')
   ? false : 'needs util-linux script(1)';
 test('init on a real TTY prompts and takes the typed title', { skip: ptySkip }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'decklight-init-'));
-  // three answers typed ahead: the title, "n" to the git offer, "n" to the
-  // dev handoff — one readline serves all three, so none of them is dropped
+  // two answers typed ahead: the title, "n" to the git offer — one readline
+  // serves both, so neither is dropped. `--inline --no-open`: a self-contained
+  // deck opens as a file, and --no-open keeps the browser closed, so nothing
+  // is started that the test would have to stop.
   const r = spawnSync('/usr/bin/script',
-    ['-qec', `node "${CLI}" init --dir "${dir}" --no-skill`, '/dev/null'],
-    { encoding: 'utf8', input: 'Ship & Tell\nn\nn\n' });
+    ['-qec', `node "${CLI}" init --dir "${dir}" --no-skill --inline --no-open`, '/dev/null'],
+    { encoding: 'utf8', timeout: 60_000, input: 'Ship & Tell\nn\n' });
   assert.equal(r.status, 0);
   assert.match(r.stdout, /deck title \[My Deck\]:/);
   assert.match(fs.readFileSync(path.join(dir, 'deck.html'), 'utf8'), /<title>Ship &amp; Tell<\/title>/);
@@ -274,7 +276,7 @@ test('the runtime version and the package version are the same number', () => {
   // These drifted silently: src/index.js sat at 0.1.0 while package.json reached
   // 0.3.0, so every bundled deck carried a banner two releases stale — and the
   // banner is not decoration. `decklight init` quotes it back when it refuses a
-  // collision, `upgrade` locates the runtime by it, and since PRESENT#AUDIT the
+  // collision, `upgrade` locates the runtime by it, and since READ_ONLY#AUDIT the
   // ingredients label prints it to whoever opens a deck they did not author. A
   // stamped version nobody checks is read as a fact, which is what makes a wrong
   // one worse than none.
@@ -562,11 +564,13 @@ test('init --git still succeeds when git is missing from PATH', () => {
 test('init on a real TTY asks the git question; Y creates the repo and commits', { skip: ptySkip }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'decklight-init-git-'));
   const r = spawnSync('/usr/bin/script',
-    ['-qec', `node "${CLI}" init "Repo Talk" --dir "${dir}" --no-skill`, '/dev/null'],
-    { encoding: 'utf8', input: 'y\n', env: gitIdEnv });
+    // `--inline --no-open`: a self-contained deck opens as a file and --no-open
+    // keeps the browser closed, so init starts nothing the test would have to stop
+    ['-qec', `node "${CLI}" init "Repo Talk" --dir "${dir}" --no-skill --inline --no-open`, '/dev/null'],
+    { encoding: 'utf8', timeout: 60_000, input: 'y\n', env: gitIdEnv });
   assert.equal(r.status, 0);
   assert.match(r.stdout, /create a git repository so every version of the deck is kept\? \[Y\/n\]/);
-  // init prints the command instead of asking, or starting anything
+  // a self-contained deck is the presentation: nothing is started for it
   assert.doesNotMatch(r.stdout, /start editing now\?/);
   assert.match(r.stdout, /decklight \S+\.html/, 'the command that starts editing is printed');
   assert.match(r.stdout, /\x1b\[36m/, 'the epilogue is accent-colored on a TTY');
@@ -580,7 +584,7 @@ test('init --help documents --git/--no-git/--open', () => {
   const out = execFileSync('node', [CLI, 'init', '--help'], { encoding: 'utf8' });
   assert.match(out, /--git\b/);
   assert.match(out, /--no-git\b/);
-  assert.match(out, /--open\s+open the scaffolded deck in your default browser/);
+  assert.match(out, /--no-open\s+start the deck without opening the browser/);
 });
 
 // --- decklight init --open (issue #52) ----------------------------------------
@@ -623,7 +627,7 @@ test('openDeck survives a missing launcher: one line naming it, no throw', async
   assert.match(out.text, /--open: could not launch a browser \(xdg-open: ENOENT\)/);
 });
 
-test('init --open launches the platform launcher on the deck actually written', { skip: process.platform !== 'linux' && 'exercises the xdg-open path' }, async () => {
+test('init --inline --open launches the platform launcher on the deck actually written', { skip: process.platform !== 'linux' && 'exercises the xdg-open path' }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'decklight-open-'));
   // a PATH holding ONLY a logging xdg-open, so the test never opens a browser
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'decklight-open-bin-'));
@@ -636,7 +640,7 @@ test('init --open launches the platform launcher on the deck actually written', 
   assert.equal(fs.existsSync(log), false, 'init without --open must not launch anything');
 
   const out = execFileSync(process.execPath,
-    [CLI, 'init', '--open', '--dir', dir, '-o', 'talk.html', '--no-skill'],
+    [CLI, 'init', '--inline', '--open', '--dir', dir, '-o', 'talk.html', '--no-skill'],
     { encoding: 'utf8', env: { ...process.env, PATH: bin } });
   assert.match(out, /created .*talk\.html/);
   assert.match(out, /opening .*talk\.html in your default browser/);
@@ -650,10 +654,10 @@ test('init --open launches the platform launcher on the deck actually written', 
   rmTemp(dir);
 });
 
-test('init --open with no launcher on PATH: deck still created, exit 0, skip line', () => {
+test('init --inline --open with no launcher on PATH: deck still created, exit 0, skip line', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'decklight-open-'));
   const emptyBin = fs.mkdtempSync(path.join(os.tmpdir(), 'decklight-open-empty-'));
-  const r = spawnSync(process.execPath, [CLI, 'init', '--open', '--dir', dir, '--no-skill'],
+  const r = spawnSync(process.execPath, [CLI, 'init', '--inline', '--open', '--dir', dir, '--no-skill'],
     { encoding: 'utf8', env: { ...process.env, PATH: emptyBin } });
   assert.equal(r.status, 0, 'a failed launch is non-fatal — the deck was created');
   assert.match(r.stdout, /created .*deck\.html/);
@@ -869,7 +873,7 @@ test('init --no-skill with --global-skill is an error', () => {
 
 test('init without a TTY never asks the skill question — the project install is untouched', () => {
   const dir = mkdir();
-  const r = spawnSync('node', [CLI, 'init', 'Quiet Deck', '--dir', dir], { encoding: 'utf8', input: '' });
+  const r = spawnSync('node', [CLI, 'init', 'Quiet Deck', '--dir', dir], { encoding: 'utf8', timeout: 60_000, input: '' });
   assert.equal(r.status, 0);
   assert.doesNotMatch(r.stdout + r.stderr, /where should the skill go/);
   assert.doesNotMatch(r.stdout + r.stderr, /agent skill teaches/, 'no scope explanation either — output is byte-identical to before');
@@ -882,7 +886,7 @@ test('init without a TTY never asks the skill question — the project install i
 test('init --global-skill with no agent on PATH falls back to Claude Code; the project stays skill-free', () => {
   const home = mkdir(); const dir = mkdir(); const empty = emptyPath();
   const r = spawnSync(process.execPath, [CLI, 'init', 'Global Deck', '--dir', dir, '--global-skill'],
-    { encoding: 'utf8', input: '', env: { ...fakeHomeEnv(home), PATH: empty } });
+    { encoding: 'utf8', timeout: 60_000, input: '', env: { ...fakeHomeEnv(home), PATH: empty } });
   assert.equal(r.status, 0);
   assert.doesNotMatch(r.stdout, /where should the skill go/, 'the flag suppresses the question');
   assert.doesNotMatch(r.stdout, /detected on PATH/, 'nothing was detected — no lie about it');
@@ -901,7 +905,7 @@ test('init --global-skill targets the PATH-detected agents, like bare `decklight
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'decklight-skillbin-'));
   fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\n', { mode: 0o755 });
   const r = spawnSync(process.execPath, [CLI, 'init', '--dir', dir, '--global-skill'],
-    { encoding: 'utf8', input: '', env: { ...fakeHomeEnv(home), PATH: bin } });
+    { encoding: 'utf8', timeout: 60_000, input: '', env: { ...fakeHomeEnv(home), PATH: bin } });
   assert.equal(r.status, 0);
   assert.match(r.stdout, /detected on PATH: OpenAI Codex/);
   assert.match(r.stdout, /globally for OpenAI Codex/);
@@ -928,8 +932,8 @@ test('init --global-skill refreshes an existing global skill without demanding -
 test('init on a real TTY asks the skill scope, naming both paths; g installs globally', { skip: ptySkip }, () => {
   const home = mkdir(); const dir = mkdir(); const empty = emptyPath();
   const r = spawnSync('/usr/bin/script',
-    ['-qec', `"${process.execPath}" "${CLI}" init "Global Talk" --dir "${dir}"`, '/dev/null'],
-    { encoding: 'utf8', input: 'g\nn\nn\n', env: { ...fakeHomeEnv(home), PATH: empty, SHELL: '/bin/sh' } });
+    ['-qec', `"${process.execPath}" "${CLI}" init "Global Talk" --dir "${dir}" --inline --no-open`, '/dev/null'],
+    { encoding: 'utf8', timeout: 60_000, input: 'g\nn\n', env: { ...fakeHomeEnv(home), PATH: empty, SHELL: '/bin/sh' } });
   assert.equal(r.status, 0);
   assert.match(r.stdout, /where should the skill go\? \[P\/g\]/);
   assert.match(r.stdout, /\.claude\/skills\/decklight/, 'the project path is named');
@@ -944,8 +948,8 @@ test('init on a real TTY asks the skill scope, naming both paths; g installs glo
 test('init on a real TTY: Enter keeps the project install, byte-for-byte', { skip: ptySkip }, () => {
   const home = mkdir(); const dir = mkdir(); const empty = emptyPath();
   const r = spawnSync('/usr/bin/script',
-    ['-qec', `"${process.execPath}" "${CLI}" init "Local Talk" --dir "${dir}"`, '/dev/null'],
-    { encoding: 'utf8', input: '\nn\nn\n', env: { ...fakeHomeEnv(home), PATH: empty, SHELL: '/bin/sh' } });
+    ['-qec', `"${process.execPath}" "${CLI}" init "Local Talk" --dir "${dir}" --inline --no-open`, '/dev/null'],
+    { encoding: 'utf8', timeout: 60_000, input: '\nn\n', env: { ...fakeHomeEnv(home), PATH: empty, SHELL: '/bin/sh' } });
   assert.equal(r.status, 0);
   assert.match(r.stdout, /where should the skill go\? \[P\/g\]/);
   assert.match(r.stdout, /wrote \.claude\/skills\/decklight\/\{SKILL\.md,reference\.md\}/);

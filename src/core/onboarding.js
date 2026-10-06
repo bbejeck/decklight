@@ -6,7 +6,7 @@
 //
 // A newcomer opens a deck and sees a slide. The three things they cannot guess
 // are the three things that make Decklight — the deck is one HTML file an agent
-// can author, `/` is the way into everything, and author mode turns the player
+// can author, `/` is the way into everything, and write mode turns the player
 // into an editor. So the FIRST load a browser ever gives us gets a card that
 // says exactly that (WELCOME), and every load after it gets at most one line
 // through the message facility (TIPS) until the deck has taught its shortcuts
@@ -47,13 +47,13 @@ export const TIPS = [
   { id: 'narrate', text: 'press V to have the deck narrate itself from its speaker notes' },
   { id: 'messages', text: 'press ` (left of 1) for the message log — every message the deck has shown' },
   { id: 'fullscreen', text: 'press F for fullscreen, B to black out the screen mid-talk' },
-  { id: 'author', text: 'decklight <deck.html> turns this player into an editor — A asks an AI agent, E edits' },
+  { id: 'write', text: 'decklight <deck.html> turns this player into an editor — A asks an AI agent, E edits' },
   { id: 'inline', text: 'in write mode, press E, then double-click any text to edit it in place; drop a picture onto a slide to add it' },
-  { id: 'editbar', text: 'in author mode, press E to edit: a bar names every editing door, and a click selects an element' },
+  { id: 'editbar', text: 'in write mode, press E to edit: a bar names every editing door, and a click selects an element' },
 ];
 
 const SEEN_KEY = 'decklight-onboarded';   // the welcome card, once per browser
-const AUTHOR_SEEN_KEY = 'decklight-onboarded-author';   // the editing tour, once per browser
+const TOUR_SEEN_KEY = 'decklight-onboarded-tour';   // the editing tour, once per browser
 const TIPS_SEEN_KEY = 'decklight-tips-seen';
 const TIPS_OFF_KEY = 'decklight-tips-off';
 
@@ -120,26 +120,26 @@ export function createOnboarding({ root, printMode, params, toast, debugLog, ove
     debugLog?.('nav', 'welcome shown');
   }
 
-  // ----- the editing tour: author mode's own first run ------------------------
-  // The welcome explains presenting and says author mode exists; the first
-  // load that IS author mode gets a card of its own, the four gestures and
+  // ----- the editing tour: write mode's own first run ------------------------
+  // The welcome explains presenting and says write mode exists; the first
+  // load that IS write mode gets a card of its own, the four gestures and
   // the keys that matter when the file is yours to change. Once per browser,
   // never on top of the welcome (one card a load), and never where no author
   // server answers: the tour is about what this deck can do, not what some
   // other deck could.
-  let authorEl = null;
-  function dismissAuthorWelcome() {
-    if (!authorEl) return;
-    authorEl.remove();
-    authorEl = null;
-    write(AUTHOR_SEEN_KEY, '1');
+  let tourEl = null;
+  function dismissEditingTour() {
+    if (!tourEl) return;
+    tourEl.remove();
+    tourEl = null;
+    write(TOUR_SEEN_KEY, '1');
     debugLog?.('nav', 'editing tour dismissed');
   }
-  function showAuthorWelcome() {
-    if (authorEl || cardEl || printMode) return;
-    authorEl = document.createElement('div');
-    authorEl.className = 'decklight-welcome wel-author';
-    authorEl.innerHTML = `<div class="wel-card">
+  function showEditingTour() {
+    if (tourEl || cardEl || printMode) return;
+    tourEl = document.createElement('div');
+    tourEl.className = 'decklight-welcome wel-tour';
+    tourEl.innerHTML = `<div class="wel-card">
       <h3>Editing this deck</h3>
       <p class="wel-lead">This deck is open in write mode (<code>decklight &lt;deck.html&gt;</code>): what you change here is written to the file, snapshotted, and taken back with <b>Z</b>. Lock editing from the <code>/</code> palette to avoid a change by mistake.</p>
       <table>
@@ -155,28 +155,28 @@ export function createOnboarding({ root, printMode, params, toast, debugLog, ove
         <button type="button" class="wel-go">Got it</button>
       </div>
     </div>`;
-    authorEl.addEventListener('click', (e) => { e.stopPropagation(); dismissAuthorWelcome(); });
-    closeOnBackdrop(authorEl, dismissAuthorWelcome);
-    root.appendChild(authorEl);
+    tourEl.addEventListener('click', (e) => { e.stopPropagation(); dismissEditingTour(); });
+    closeOnBackdrop(tourEl, dismissEditingTour);
+    root.appendChild(tourEl);
     debugLog?.('nav', 'editing tour shown');
   }
   /**
-   * The author-mode load's teaching moment, once the author server has
+   * The write-mode load's teaching moment, once the edit server has
    * answered: the tour, the first time, on the deck's first slide, and not
    * over a welcome that is already up. Nothing on a load that teaches nobody.
    */
   /** Both cards, for the advance that retires whichever is up. */
-  function dismissCards() { dismissWelcome(); dismissAuthorWelcome(); }
-  function startAuthor(target) {
-    if (quiet || cardEl || authorEl) return;
+  function dismissCards() { dismissWelcome(); dismissEditingTour(); }
+  function startEditingTour(target) {
+    if (quiet || cardEl || tourEl) return;
     if (target.slide !== 1 || target.step !== 0) return;
-    if (read(AUTHOR_SEEN_KEY) === '1') return;
-    showAuthorWelcome();
+    if (read(TOUR_SEEN_KEY) === '1') return;
+    showEditingTour();
   }
   overlays.register({
-    isOpen: () => !!authorEl,
-    close: dismissAuthorWelcome,
-    keydown: () => (dismissAuthorWelcome(), true),
+    isOpen: () => !!tourEl,
+    close: dismissEditingTour,
+    keydown: () => (dismissEditingTour(), true),
   });
 
   // The card owns the keyboard while it is up, and spends it on one job: the
@@ -248,11 +248,11 @@ export function createOnboarding({ root, printMode, params, toast, debugLog, ove
 
   return {
     start,
-    startAuthor,
+    startEditingTour,
     showWelcome,
     dismissWelcome,
-    showAuthorWelcome,
-    dismissAuthorWelcome,
+    showEditingTour,
+    dismissEditingTour,
     showTip,
     setTips,
     resetTips,
