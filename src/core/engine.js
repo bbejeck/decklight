@@ -2211,6 +2211,7 @@ export function init(userConfig = {}) {
       <tr><td>&lt; / &gt;</td><td>voice speed (0.25× steps)</td></tr>
       <tr><td>B</td><td>blackout</td></tr>
       <tr><td>D</td><td>debug log</td></tr>
+      <tr><td>pinch · 0</td><td>zoom the slide (trackpad pinch, or two fingers; scroll pans) · 0, Esc or a slide change fits it again</td></tr>
       <tr><td>&#96;</td><td>messages — the key left of 1 (⌃&#96; / ⌥&#96; also works while editing notes)</td></tr>
       <tr><td>C</td><td>captions (follow the voice)</td></tr>
       <tr><td>W</td><td>pen — draw on the slide (⌫ clears)</td></tr>
@@ -2498,12 +2499,14 @@ export function init(userConfig = {}) {
       case '?': toggleHelp(); break;
       case 'Escape':
         if (cancelCyclePending()) break;
+        if (zoom.k !== 1 && !overlays.active()) { resetZoom(); break; }
         if (overviewEl) toggleOverview();
         // the two panels that are not overlays (they take no keys of their
         // own) still close on Esc, like every other panel
         else if (helpEl) toggleHelp();
         else if (debugEl) toggleDebug();
         break;
+      case '0': if (zoom.k !== 1) resetZoom(); else return; break;
       default: return;
     }
     e.preventDefault();
@@ -2511,9 +2514,9 @@ export function init(userConfig = {}) {
   if (!printMode) document.addEventListener('keydown', onKey);
 
   let touchX = null;
-  root.addEventListener('touchstart', (e) => { touchX = e.touches[0].clientX; }, { passive: true });
+  root.addEventListener('touchstart', (e) => { touchX = e.touches.length === 1 ? e.touches[0].clientX : null; }, { passive: true });
   root.addEventListener('touchend', (e) => {
-    if (touchX == null) return;
+    if (touchX == null || zoom.k !== 1) return;   // a zoomed slide is panned, not turned
     const dx = e.changedTouches[0].clientX - touchX;
     if (Math.abs(dx) > 40) (dx < 0 ? instance.next() : instance.prev());
     touchX = null;
@@ -2537,9 +2540,119 @@ export function init(userConfig = {}) {
     // Published for the chrome that sits OUTSIDE the scaled stage: captions are
     // sized in px on the root, so in a preview iframe they stayed full-size over
     // a thumbnail of the slide (#490). A var, not a second copy of this maths.
+    // The FIT scale, not the zoomed one: the chrome never zooms.
     root.style.setProperty('--stage-scale', String(s));
+    // The zoom (pinch, below) multiplies the fit and pans the stage; the
+    // chrome lives on the root, outside this transform, and keeps its size.
     stage.style.transform =
-      `translate(-50%, -50%) translate(${(dl - dr) / 2}px, ${-db / 2}px) scale(${s})`;
+      `translate(-50%, -50%) translate(${(dl - dr) / 2 + zoom.x}px, ${-db / 2 + zoom.y}px) scale(${s * zoom.k})`;
+  }
+
+  // ----- pinch zoom (PRESENTING) -----------------------------------------
+  // A pinch zooms the SLIDE, not the page: the stage is the one element the
+  // fit transform scales, so a factor on top of it zooms the content and
+  // nothing else on screen — panels, bars, captions and the editing chrome
+  // all sit on the root, outside the transform. On a trackpad a pinch is a
+  // wheel event with ctrlKey (every browser, every platform); on a touch
+  // screen it is two fingers. Both are taken here, preventDefault and all,
+  // which is what stops the browser zooming the whole page instead.
+  // A zoom is "look closer at this", not a setting: it does not persist,
+  // and a slide change, Esc, 0 or pinching back below 1 snap it to fit.
+  // Two-finger scroll (a plain wheel) pans while zoomed; at 1 it is left
+  // to whatever it did before, which is nothing.
+  const ZOOM_MAX = 4;
+  const zoom = { k: 1, x: 0, y: 0 };
+  function applyZoom(k, { at = null, dx = 0, dy = 0 } = {}) {
+    const next = Math.min(ZOOM_MAX, Math.max(1, k));
+    if (at && next !== zoom.k) {
+      // zoom about the point under the fingers: keep that content point still
+      const box = root.getBoundingClientRect();
+      const cx = at.x - (box.left + box.width / 2) - zoom.x;
+      const cy = at.y - (box.top + box.height / 2) - zoom.y;
+      const r = next / zoom.k;
+      zoom.x += cx - cx * r;
+      zoom.y += cy - cy * r;
+    }
+    zoom.k = next;
+    zoom.x += dx; zoom.y += dy;
+    if (zoom.k === 1) { zoom.x = 0; zoom.y = 0; }
+    else {
+      // the stage never leaves the window: the pan is bounded by how much
+      // of the zoomed stage overhangs it
+      const box = root.getBoundingClientRect();
+      const w = parseFloat(stage.style.width) * instance._scale * zoom.k, h = parseFloat(stage.style.height) * instance._scale * zoom.k;
+      const mx = Math.max(0, (w - box.width) / 2), my = Math.max(0, (h - box.height) / 2);
+      zoom.x = Math.min(mx, Math.max(-mx, zoom.x));
+      zoom.y = Math.min(my, Math.max(-my, zoom.y));
+    }
+    root.classList.toggle('is-zoomed', zoom.k !== 1);
+    rescale();
+    paintZoomChip();
+  }
+  const resetZoom = () => { if (zoom.k !== 1) applyZoom(1); };
+  // The percentage, top right, for as long as the slide is not at fit: a
+  // zoomed slide looks like a slide, and the one thing that tells you why
+  // the edges are missing is this. On the slide number's row, to its left,
+  // while editing is on (under it sat on the commit chip); measured from
+  // the badge's own width, since "1 / 9" and "12 / 120" are not the same.
+  // A click on it fits, like 0.
+  let zoomChip = null;
+  function paintZoomChip() {
+    if (zoom.k === 1) { zoomChip?.remove(); zoomChip = null; return; }
+    if (!zoomChip) {
+      zoomChip = document.createElement('button');
+      zoomChip.type = 'button';
+      zoomChip.className = 'decklight-zoom';
+      zoomChip.title = 'zoomed — click, 0 or Esc fits the slide again';
+      zoomChip.addEventListener('click', resetZoom);
+      root.appendChild(zoomChip);
+    }
+    zoomChip.textContent = `${Math.round(zoom.k * 100)}%`;
+    const badge = root.querySelector('.decklight-slide-num');
+    zoomChip.style.right = badge ? `${16 + badge.offsetWidth + 8}px` : '';
+  }
+  // the badge comes and goes with editing and the lock: the chip follows it
+  new MutationObserver(() => { if (zoomChip) paintZoomChip(); }).observe(root, { childList: true });
+  /** The deck's zoom as the harness and the debug line read it: factor and pan. */
+  instance.zoom = () => ({ k: zoom.k, x: zoom.x, y: zoom.y });
+  instance.setZoom = (k, opts) => applyZoom(k, opts);
+  if (!printMode && !params.has('embedded')) {
+    // Over the slide, or the letterbox around it — not over a panel beside
+    // it (the notes card, the inspector), nor a picker or the overview, which
+    // cover the stage with their own element: the gesture there belongs to
+    // whatever is under the fingers. A docked panel being open is no reason
+    // not to zoom the slide next to it.
+    const onStage = (t) => !overviewEl && (t === root || stage.contains(t));
+    root.addEventListener('wheel', (e) => {
+      if (e.ctrlKey) {
+        // a pinch on a trackpad: never the page's zoom, wherever it lands…
+        e.preventDefault();
+        if (!onStage(e.target)) return;
+        // …and the slide's over the slide; deltaY is small and signed, so a
+        // smooth exponential step per event tracks the fingers
+        applyZoom(zoom.k * Math.exp(-e.deltaY * 0.01), { at: { x: e.clientX, y: e.clientY } });
+      } else if (zoom.k !== 1 && onStage(e.target)) {
+        e.preventDefault();
+        applyZoom(zoom.k, { dx: -e.deltaX, dy: -e.deltaY });
+      }
+    }, { passive: false });
+    // two fingers on a touch screen: the distance between them is the zoom,
+    // their midpoint's movement the pan
+    let pinch = null;
+    const span = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    const mid = (t) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+    root.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2 && onStage(e.target)) pinch = { d: span(e.touches), k: zoom.k, m: mid(e.touches) };
+    }, { passive: true });
+    root.addEventListener('touchmove', (e) => {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault();
+      const m = mid(e.touches);
+      applyZoom(pinch.k * (span(e.touches) / pinch.d), { at: m, dx: m.x - pinch.m.x, dy: m.y - pinch.m.y });
+      pinch.m = m;
+    }, { passive: false });
+    root.addEventListener('touchend', (e) => { if (e.touches.length < 2) pinch = null; }, { passive: true });
+    instance.on('slide', resetZoom);
   }
   // Docked overlays call this after changing a `--dock-*` var: it is the same
   // refit the ResizeObserver runs, but a var change is not a resize.
