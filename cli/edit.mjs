@@ -62,8 +62,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, appendFileSync, wa
 // edit server rewrites the whole file on every small edit, and a truncate
 // that is interrupted leaves a prefix of a talk where the talk was.
 import { writeFileAtomic } from '../tools/atomic-write.mjs';
-import { resolve, relative, dirname, sep, basename, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve, relative, dirname, sep, basename } from 'node:path';
 import { VIDEO_FORMATS, VIDEO_QUALITIES, VIDEO_SUBTITLES, valuesOf } from '../tools/video-options.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -86,10 +85,10 @@ const startup = (key, text, human, mark) => {
   else console.log(human);
 };
 import { argReader, firstPositional, isMain, parsePort, badPort } from '../tools/args.mjs';
-import { runMain, CommandError } from './util.mjs';
+import { runMain } from './util.mjs';
 import { PKG, AGENTS_MARKER, skillVersionOf } from './skill-content.mjs';
 import { selfCommand } from './pkg.mjs';
-import { commitPlan, headTags, planWorking, pushBlocked, pushBranch, slideDiff, slidesSinceHead, tagHead, unitSummary } from './commit-split.mjs';
+import { slidesSinceHead } from './commit-split.mjs';
 import { semverCompare } from '../tools/semver.mjs';
 
 // The flags that take a value, so the deck can be found past them. `--git-mode`
@@ -99,7 +98,7 @@ const VALUE_FLAGS = ['--port', '--commit-every', '--agent', '--git-mode', '--tts
   '--host', '--root', '--branch', '--into', '--upstream-every'];
 import { NOTES_ASIDE, locateSlide, sectionChildRanges, elementChildRanges, splitOpenTag } from '../tools/deck-html.mjs';
 import { canonMarks, writtenMarks, CLICK_MARK } from '../tools/sentences.mjs';
-import { configBlock, configTheme, hasEmbeddedRuntime, linkRuntime, setDeckTheme, setDeckBrandThemesOnly } from './runtime-link.mjs';
+import { configBlock, hasEmbeddedRuntime, linkRuntime } from './runtime-link.mjs';
 import { linkReferences } from './deck-refs.mjs';
 import { slideTexts, priorSlideTexts, staleSlides } from '../tools/narration-manifest.mjs';
 // The routes that rewrite a slide, which took three of editMain's bindings and
@@ -111,6 +110,13 @@ import { slideTexts, priorSlideTexts, staleSlides } from '../tools/narration-man
 // A static cycle has no such moment: both bodies are function declarations,
 // hoisted before either runs, and nothing is read until a request arrives.
 import { registerSlideRoutes } from './edit-slides.mjs';
+// The route groups split out after it, imported the same way and for the same
+// reason: the deck's look (themes, design systems, fonts), and handing the
+// deck over (export, publish, the inspector's read), and git (the commit
+// window, the deck's history, restore).
+import { registerLookRoutes } from './edit-look.mjs';
+import { registerHandoverRoutes } from './edit-handover.mjs';
+import { registerGitRoutes } from './edit-git.mjs';
 // the boot-call locator audit and upgrade share — three commands, one answer
 // about which <script> is the init call
 import { classifyScripts, auditDeck, formatLabel, stripUnaccounted } from './audit.mjs';
@@ -135,7 +141,7 @@ import { commentProblem, reviewRecord } from './review-routes.mjs';
 import { foldReview } from '../tools/review-anchor.mjs';
 import { recordingImpact, impactWarning, slidesFromFiles } from '../tools/recording-impact.mjs';
 import { indexDeckFile, slideTextOf, knowsCommit } from './comments.mjs';
-import { deckHistory, decorateHistory, restoreDeck, deckAt, withBaseHref } from './restore.mjs';
+import { deckAt } from './restore.mjs';
 import { escapeHtml, staticFiles, listenTakingOverIfNeeded, allowEditRequest, allowRemote, lanAddress, isOwnOrigin, CSP } from './serve.mjs';
 import { reviewsWaiting, reviewLine, reviewCheckSuppressed } from './review-remote.mjs';
 import { configureEngine, loadCredentials, forgetCredentials, redactAnswers, validateSchema, provenance, BRIDGE_ADDR, CONFIGURED, UNREACHABLE, PREREQUISITE } from './wizard.mjs';
@@ -1081,12 +1087,11 @@ export function createHistory(limit = 200) {
 // The plumbing lives in git.mjs now; imported for editMain's use below and
 // re-exported so long-standing importers (init, the tests) keep finding it
 // where edit grew it.
-import { git, inGitRepo, gitAvailable, createRepo, STARTER_GITIGNORE, gitAutocommit, lastCommitSha, resolveGitMode, shouldCommit, commitSubject, exitPushLine, oneline, remoteLine, remoteState, unpushed } from './git.mjs';
+import { inGitRepo, gitAvailable, createRepo, STARTER_GITIGNORE, gitAutocommit, lastCommitSha, resolveGitMode, shouldCommit, commitSubject, exitPushLine, oneline, remoteState } from './git.mjs';
 import {
-  describeCommit, describeWorking, messagesLine,
+  describeCommit, messagesLine,
 } from './commit-message.mjs';
 import { WIP_REF, deckDirty, nagText, planNag, snapshotWip, wipLine } from './commit-flow.mjs';
-import { THEME_NAME, GEN_THEME } from '../tools/render-theme.mjs';
 export { inGitRepo, createRepo, STARTER_GITIGNORE, gitAutocommit };
 
 /** Who the author is, from git's own answer — see cli/review-routes.mjs. */
@@ -1494,11 +1499,9 @@ export async function editMain(args, { onListen = null, client } = {}) {
   const agentAsks = [];
   const ASKS_KEPT = 20;
   let askSeq = 0;
-  let exporting = false; // an export in flight — one browser, one output path, any kind
   let enhancing = null;  // a script enhancement in flight: { of, done } — one at a time
   let reviewing = null;  // an agent review in flight: { of, done } — one at a time
   let lastReview = null; // its last result: { at, agent, findings, failed } — kept for Check deck… to re-ask
-  let publishing = false; // a publish in flight — one push at a time
 
   // ── git autocommit — the durable record, independent of undo/redo ──────
   const noGit = args.includes('--no-git');
@@ -2160,7 +2163,7 @@ export async function editMain(args, { onListen = null, client } = {}) {
   };
 
   let pending = null;
-  let quietWrite = null; // the bytes of a write that updates the page itself (themeMarkRoute)
+  let quietWrite = null; // the bytes of a write that updates the page itself (themeMarkRoute, cli/edit-look.mjs)
   // The DIRECTORY, not the file. A path watch follows the inode, and an
   // atomic write — temp file + rename, which is how an agent's editor and
   // most careful tools save — replaces the inode: the watcher then sits deaf
@@ -2369,46 +2372,6 @@ export async function editMain(args, { onListen = null, client } = {}) {
     }
     return json(200, { ok: true, locked });
   }
-  // The deck's theme (PRESENTING): in write mode a pick is the deck's, not
-  // the viewer's — written the way this deck carries it (setDeckTheme), quiet
-  // and in place like a layout pick, with a `theme` event for every other
-  // page. One undo entry, so Z takes it back.
-  function themeRoute({ body, json }) {
-    const { theme, quiet: inPlace, from } = JSON.parse(body || '{}');
-    if (typeof theme !== 'string' || !/^[\w-]+$/.test(theme)) return json(400, { ok: false, error: 'theme is a name' });
-    let unwritable = false;
-    const changed = applyEdit((html) => { const next = setDeckTheme(html, theme); if (next === null) unwritable = true; return next ?? html; });
-    if (unwritable) return json(409, { ok: false, error: `this deck does not carry a theme the server can set to ${theme} — a bundle holds only the themes it embeds` });
-    if (changed) {
-      console.log(`  theme saved: ${theme}`);
-      if (inPlace === true) {
-        quietWrite = readDeck();
-        broadcast('theme', { theme, from: typeof from === 'string' ? from.slice(0, 64) : null });
-      }
-    }
-    return json(200, { ok: true, changed, inPlace: changed && inPlace === true, ...history.counts() });
-  }
-  /**
-   * `POST /deck/edit/brand-themes` `{ only, quiet?, from? }`: whether the
-   * picker holds this deck to its design systems' own themes (SPEC
-   * BRAND_PALETTE) — the picker's *Show every theme* and *Only <brand>'s
-   * themes* rows. Quiet and in place like a theme pick; every other page reloads.
-   */
-  function brandThemesRoute({ body, json }) {
-    const { only, quiet: inPlace, from } = JSON.parse(body || '{}');
-    if (typeof only !== 'boolean') return json(400, { ok: false, error: 'only is true or false' });
-    let unwritable = false;
-    const changed = applyEdit((html) => { const next = setDeckBrandThemesOnly(html, only); if (next === null) unwritable = true; return next ?? html; });
-    if (unwritable) return json(409, { ok: false, error: 'this deck carries no configuration block to record it in — decklight upgrade --link <deck.html> gives it one' });
-    if (changed) {
-      console.log(`  brand themes only: ${only}`);
-      if (inPlace === true) {
-        quietWrite = readDeck();
-        broadcast('styles', { slide: 1, index: 0, from: typeof from === 'string' ? from.slice(0, 64) : null });
-      }
-    }
-    return json(200, { ok: true, changed, inPlace: changed && inPlace === true, ...history.counts() });
-  }
   function shutdownRoute({ res, json, CORS }) {
     res.writeHead(200, { ...CORS, 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
@@ -2426,285 +2389,6 @@ export async function editMain(args, { onListen = null, client } = {}) {
     writeDeck(content);
     console.log(`  ${dir} → ${JSON.stringify(history.counts())}`);
     return json(200, { ok: true, ...history.counts() });
-  }
-
-  // ── committing on the author's word (SPEC PRESENTING) ─────────────────
-  // What is uncommitted, right now. The overlay opens on this rather than
-  // on whatever the last SSE event said, because K can be pressed at any
-  // moment and a stale count is a lie about what you are agreeing to.
-  function commitStatusRoute({ json }) {
-    if (gitOn) measureDirty();     // the answer must be about NOW, not the last tick
-    return json(200, { ok: true, ...commitState(), deck: deckRel, ...(gitOn ? whereItStands() : {}) });
-  }
-
-  // What the window's tag and push rows read: the tags on HEAD, and where the
-  // branch stands against its remote — a LOCAL read (remoteState never
-  // fetches), so "1 commit not pushed" is as of the last push or pull.
-  function whereItStands() {
-    const s = remoteState(root);
-    return {
-      tags: headTags(root),
-      push: {
-        state: s.state, remote: s.remote, branch: s.branch, upstream: s.upstream,
-        ahead: s.state === 'ok' ? s.ahead : s.unpushed, behind: s.behind, blocked: pushBlocked(s),
-      },
-    };
-  }
-
-  // The commit the author asked for. The subject is THEIRS — typed, or an
-  // agent's sentence they looked at and kept — so it goes through
-  // `commitSubject` like every other message that reaches a command line
-  // (one line, capped, never a leading `-`) and nothing else rewrites it:
-  // `describeCommit`'s amend is for messages decklight authored, and this
-  // one has an author.
-  function commitRoute({ body, json }) {
-    if (!gitOn) return json(409, { ok: false, error: 'this session is not committing — open the deck with --git' });
-    let msg = '';
-    try { msg = String(JSON.parse(body || '{}').message ?? '').trim(); } catch { /* below */ }
-    if (!msg) return json(400, { ok: false, error: 'a commit needs a message' });
-    const subject = commitSubject(msg, `decklight: autosave ${basename(deckPath)}`);
-    // gitAutocommit reports false for "nothing to commit", which is not an
-    // error: it is the answer to pressing K twice.
-    const made = gitAutocommit(deckPath, root, subject, alsoNow());
-    if (!made) return json(200, { ok: true, committed: false, ...commitState() });
-    pendingAttr = null;
-    resetEpisode();
-    console.log(`  git: committed ${deckRel} — "${subject}"`);
-    return json(200, {
-      ok: true, committed: true, subject, ...history.counts(), ...commitState(),
-    });
-  }
-
-  // A subject for work that is not committed yet — the overlay's "write one
-  // for me", asked only when that is pressed (or as the window opens, with
-  // --commit-messages). Refused when the session turned subjects off, or
-  // there is no agent to ask.
-  async function commitSubjectRoute({ json }) {
-    if (subjectsOff) {
-      return json(403, { ok: false, error: 'commit subjects are off in this session — it was started with --no-commit-messages' });
-    }
-    // A change that is only review records (a resolve, a comment of your
-    // own) gets its subject from the records, with no agent in the loop, so
-    // it is asked for first; the deck's own diff is what needs an agent.
-    const subject = await describeWorking({
-      cwd: root, deckPath, deckRel, agent: agentPref,
-      template: `decklight: autosave ${basename(deckPath)}`,
-      also: alsoRels(),
-    });
-    if (subject) return json(200, { ok: true, subject });
-    if (!describer()) {
-      return json(409, { ok: false, error: 'no agent is installed on this machine to write one — decklight doctor lists the ones it can use' });
-    }
-    return json(200, { ok: true, subject: null });
-  }
-
-  // "write them for me": the uncommitted work cut into the commits an agent
-  // proposes (cli/commit-split.mjs). The plan carries `base`, the fingerprint
-  // of the work it was made on, which the split route checks before it
-  // commits anything. Asked only on the click, like the one-line subject.
-  async function commitPlanRoute({ json }) {
-    if (!gitOn) return json(409, { ok: false, error: 'this session is not committing — open the deck with --git' });
-    if (subjectsOff) {
-      return json(403, { ok: false, error: 'commit subjects are off in this session — it was started with --no-commit-messages' });
-    }
-    const { work, commits } = await planWorking({
-      cwd: root, deckPath, deckRel, also: alsoRels(), agent: agentPref,
-    });
-    if (!work) return json(409, { ok: false, code: 'FIRST', error: 'the first commit is one commit — write its message' });
-    if (!commits) return json(200, { ok: true, base: work.base, units: [], commits: [] });
-    if (!describer() && work.units.some((u) => u.file === deckRel)) {
-      return json(409, { ok: false, error: 'no agent is installed on this machine to write them — decklight doctor lists the ones it can use' });
-    }
-    return json(200, { ok: true, base: work.base, units: work.units.map(unitSummary), commits });
-  }
-
-  // The proposed commits, as the author left them: each subject theirs now,
-  // so each goes through commitSubject like any message. All the ticked ones
-  // land or none does (commitPlan moves the branch once); an unticked one
-  // (`skip`) stays uncommitted, and `left` hands it back re-cut against the
-  // new HEAD so the window can offer it again.
-  function commitSplitRoute({ body, json }) {
-    if (!gitOn) return json(409, { ok: false, error: 'this session is not committing — open the deck with --git' });
-    let req = {};
-    try { req = JSON.parse(body || '{}'); } catch { return json(400, { ok: false, error: 'bad request' }); }
-    const commits = Array.isArray(req.commits) ? req.commits : [];
-    const taking = commits.filter((c) => !c?.skip);
-    if (!taking.length) return json(400, { ok: false, code: 'EMPTY', error: 'no commit is ticked' });
-    if (taking.some((c) => !String(c?.message ?? '').trim())) {
-      return json(400, { ok: false, error: 'every commit needs a message' });
-    }
-    const made = commitPlan({
-      cwd: root, deckRel, also: alsoRels(), base: String(req.base ?? ''), commits,
-      template: `decklight: autosave ${basename(deckPath)}`,
-    });
-    if (!made.ok) return json(made.code === 'STALE' ? 409 : 500, { ok: false, code: made.code, error: made.error });
-    // the .gitattributes rides the sidecar's commit: still pending if that was left out
-    if (!pendingAttr || made.files.includes(attrRel())) pendingAttr = null;
-    resetEpisode();
-    measureDirty();   // what was left out is uncommitted work, starting now
-    for (const s of made.subjects) console.log(`  git: committed ${deckRel} — "${s}"`);
-    return json(200, {
-      ok: true, committed: true, count: made.subjects.length, subjects: made.subjects, subject: made.subjects.at(-1),
-      left: made.left,
-      ...history.counts(), ...commitState(), ...whereItStands(),
-    });
-  }
-
-  // An annotated tag on HEAD, named by the author.
-  function commitTagRoute({ body, json }) {
-    if (!gitOn) return json(409, { ok: false, error: 'this session is not committing — open the deck with --git' });
-    let name = '';
-    try { name = String(JSON.parse(body || '{}').name ?? ''); } catch { /* below */ }
-    const made = tagHead(root, name);
-    if (!made.ok) return json(made.code === 'GIT' ? 500 : 409, { ok: false, code: made.code, error: made.error });
-    console.log(`  git: tagged ${made.sha.slice(0, 7)} ${made.tag}`);
-    return json(200, { ok: true, tag: made.tag, ...whereItStands() });
-  }
-
-  // The push, on the author's click and only then: the branch and the
-  // annotated tags on it. One at a time; a minute at most; no prompt can
-  // hang it (pushBranch). The SSE `commit` event tells every page the
-  // count went to zero.
-  let pushing = false;
-  async function commitPushRoute({ body, json }) {
-    if (!gitOn) return json(409, { ok: false, error: 'this session is not committing — open the deck with --git' });
-    if (pushing) return json(409, { ok: false, code: 'BUSY', error: 'a push is already on its way' });
-    // tags go with the branch unless the page says not to (Settings… → Push
-    // tags): an absent or unreadable body is the default, which sends them
-    let tags = true;
-    try { tags = JSON.parse(body || '{}').tags !== false; } catch { /* the default */ }
-    pushing = true;
-    try {
-      const done = await pushBranch(root, { state: remoteState(root), tags });
-      if (!done.ok) return json(done.code === 'BLOCKED' ? 409 : 502, { ok: false, code: done.code, error: done.error });
-      console.log(`  git: pushed ${done.branch} to ${done.remote}${tags ? '' : ' (tags kept here)'}`);
-      broadcast('commit', commitState());
-      // `pushedTags`, not `tags`: whereItStands() already answers `tags`, the
-      // names on HEAD, and the window paints both
-      return json(200, { ok: true, pushed: true, remote: done.remote, branch: done.branch, pushedTags: tags, ...whereItStands() });
-    } finally { pushing = false; }
-  }
-
-  function commitDismissRoute({ json }) {
-    // Not the same as committing: the work stays uncommitted and the
-    // snapshot keeps running. It only means "stop asking about THIS one".
-    nagDismissed = true;
-    return json(200, { ok: true, ...commitState() });
-  }
-
-  // ── the deck's durable history (#129): what the R overlay reads ────
-  // Loopback-only like every other /deck/edit/* path: this serves arbitrary
-  // historical revisions of the deck, which is nobody else's business.
-  function historyRoute({ json }) {
-    if (!gitOn) return json(409, { ok: false, error: 'git is off for this session — there is no history' });
-    try {
-      // One round trip serves the whole overlay: the commits, which of them
-      // exist nowhere but this machine, and where the branch stands. All of
-      // it is a LOCAL read — `unpushed` and `@{u}` read remote-tracking
-      // refs, so opening the history never touches the network (SPEC
-      // PRESENTING).
-      // `slides` is what that version WAS, `add`/`del` what it CHANGED —
-      // the two questions a hash and a subject cannot answer, and the ones
-      // that tell "tightened the wording" apart from "cut four slides"
-      // before you restore it rather than after.
-      const entries = decorateHistory(deckHistory(deckPath, root), deckPath, root);
-      const remote = remoteState(root);
-      // `pushed` is null for "not a question worth answering here", and the
-      // two cases are different: git could not tell us, or there is no
-      // remote at all — in which case EVERY commit is unpushed and marking
-      // all of them is a wall of arrows saying what the footer says once.
-      const local = ['no-remote', 'ambiguous-remote'].includes(remote.state) ? null : unpushed(root);
-      const set = local ? new Set(local) : null;
-      for (const e of entries) e.pushed = set ? !set.has(e.full) : null;
-      // The LINE is computed here, not in the player: cli/git.mjs is Node
-      // (it spawns git), the runtime has zero dependencies and cannot
-      // import it, and duplicating the wording in the browser is how the
-      // four places that talk about unpushed work start disagreeing.
-      return json(200, { ok: true, entries, remote: { ...remote, line: remoteLine(remote) } });
-    } catch (e) { return json(500, { ok: false, error: oneline(e) }); }
-  }
-
-  /**
-   * A page this server writes ITSELF — an old version of the deck, a template
-   * preview — goes out the way `staticFiles` sends every other page: a deck
-   * that is data (#520) gets the runtime, its stylesheet, its theme and the
-   * themes it marks referenced. Without it the frame drew the deck's bare
-   * markup, dark text on the panel's dark ground — a black rectangle. The
-   * `<base>` comes first, so those references resolve from the root, where
-   * `staticFiles` answers them, not from under /deck/edit/.
-   */
-  const asServed = (html) => linkReferences(linkRuntime(withBaseHref(html)));
-
-  /**
-   * Which slides a version changed, added and removed against the one before
-   * it, in reading order: what the History overlay's "changes" view walks
-   * (PRESENTING). `parent` is the version a removed slide is shown from; the
-   * deck's first version has none, and everything in it was added. A hash is
-   * all this takes, because a ref is handed to `git show` and an option-shaped
-   * one would be read as an option.
-   */
-  const historyChanges = new Map();   // full hash → answer; a commit never changes
-  function historyChangesRoute({ url, json }) {
-    if (!gitOn) return json(409, { ok: false, error: 'git is off for this session' });
-    const ref = url.searchParams.get('ref') ?? '';
-    if (!/^[0-9a-f]{4,64}$/i.test(ref)) return json(400, { ok: false, error: 'a version is named by its hash' });
-    try {
-      const full = git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], root);
-      if (historyChanges.has(full)) return json(200, historyChanges.get(full));
-      const after = deckAt(deckPath, full, root);
-      let parent = null, before = '';
-      try {
-        parent = git(['rev-parse', '--short', `${full}^`], root);
-        before = deckAt(deckPath, parent, root);
-      } catch { /* the first commit, or one the deck was not in yet */ }
-      const answer = { ok: true, ref: full.slice(0, 7), parent, ...slideDiff(before, after) };
-      historyChanges.set(full, answer);
-      return json(200, answer);
-    } catch { return json(404, { ok: false, error: 'no such revision of this deck' }); }
-  }
-
-  function deckAtRoute({ res, url, json, CORS }) {
-    if (!gitOn) return json(409, { ok: false, error: 'git is off for this session' });
-    try {
-      // <base href="/"> because this is served from /deck/edit/, not the root:
-      // without it every relative ../dist and ./casts path in the deck
-      // would resolve one directory too deep and the preview would be bare.
-      const html = asServed(deckAt(deckPath, url.searchParams.get('ref') || '', root));
-      res.writeHead(200, { ...CORS, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
-      return res.end(html);
-    } catch (e) {
-      // Two different failures, and answering both with the same 404 is how
-      // #508 hid for a release: a deck over Node's stdout cap threw ENOBUFS
-      // here, was reported as a missing revision, and the preview iframe drew
-      // a bare 404 body as a black rectangle. A ref git does not know is the
-      // only 404; anything else is this server's problem and says so — in the
-      // terminal, and in the frame, which is where somebody is looking.
-      // git's own two ways of saying "not here": `invalid object name 'x'` for a
-      // ref it cannot resolve, `path 'x' does not exist in 'HEAD'` for a deck that
-      // was not in that commit. Everything else — ENOBUFS above all (#508) — is a
-      // failure of this server, not a missing revision, and must not wear a 404.
-      const missing = /invalid object name|unknown revision|does not exist in|exists on disk, but not in/i
-        .test(String(e.stderr || e.message || e));
-      const why = missing ? 'no such revision of this deck' : oneline(e);
-      if (!missing) console.log(`  history: previewing ${basename(deckPath)} failed — ${why}`);
-      res.writeHead(missing ? 404 : 500, { ...CORS, 'content-type': 'text/html; charset=utf-8' });
-      return res.end(previewError(why));
-    }
-  }
-
-  function restoreRoute({ body, json }) {
-    if (!gitOn) return json(409, { ok: false, error: 'git is off for this session' });
-    const { ref } = JSON.parse(body || '{}');
-    if (typeof ref !== 'string' || !ref.trim()) throw new Error('bad payload');
-    const before = readDeck();
-    let result;
-    try { result = restoreDeck(deckPath, ref.trim(), root); }
-    catch (e) { return json(400, { ok: false, error: oneline(e) }); }
-    // Z takes a restore back like any other edit — the git-level move and
-    // the keystroke-level stack stay in step rather than disagreeing.
-    if (result.changed) history.record(before);
-    console.log(`  restored ${basename(deckPath)} to ${result.short}`);
-    return json(200, { ok: true, ...result, ...history.counts() });
   }
 
   // ── review comments (SPEC REVIEW) ─────────────────────────────
@@ -2760,388 +2444,6 @@ export async function editMain(args, { onListen = null, client } = {}) {
         text: slideTextOf(thenHtml, c.slide) || '',
       });
     } catch (e) { return json(500, { ok: false, error: oneline(e) }); }
-  }
-
-  // ── marketplace themes, and marking (THEME_BROWSE#UI) ─────────────────
-  // What the overlay lists while authoring: every theme of every registered
-  // marketplace, each saying whether this deck marks it. Cache-only by
-  // construction — the catalogs `marketplace update` already fetched — so a
-  // deck on a plane lists what it has and names what it could not read.
-  async function themeBrowseRoute({ json }) {
-    const { marketplaceThemes, markedRefs, markedSources, resolveThemeRef } = await import('./theme-refs.mjs');
-    const { themes, stale } = marketplaceThemes();
-    // what the deck marks, as THIS machine names it — the deck may call the
-    // same catalog something else (its recorded source says which it means)
-    const html = readDeck();
-    const sources = markedSources(html);
-    const marked = new Set(markedRefs(html).map((r) => {
-      const hit = resolveThemeRef(r, undefined, { source: sources[r.marketplace] ?? null });
-      return `${r.name}@${hit.local ?? r.marketplace}`;
-    }));
-    const out = themes.map((t) => ({
-      ...t, marked: marked.has(t.qualified),
-      ...(resolveThemeRef(t.qualified).remote ? { remote: true } : {}),
-    }));
-    return json(200, { ok: true, themes: out, stale, cacheOnly: true });
-  }
-
-  /**
-   * Mark a theme for this deck, or unmark it (SPEC THEME_DISTRIBUTION). The
-   * deck gains or loses one reference in its config block — never CSS — as
-   * one undo entry; the watcher's reload brings every browser back with the
-   * list as the file now says it is.
-   *
-   * Marking runs the theme through `theme add`'s own validator first, so a
-   * theme refused on the command line is refused here, by the same code, and
-   * a deck cannot be made to carry what the shipped set could not contain.
-   * An entry whose bytes live at a URL is read now — this is the explicit act
-   * — and kept, so no server ever has to reach for it again.
-   */
-  async function themeMarkRoute({ body, json }) {
-    const req = JSON.parse(body || '{}');
-    const ref = typeof req.ref === 'string' ? req.ref.trim() : '';
-    const on = req.marked !== false;
-    const { parseRef, parseShipped, resolveThemeRef, setMarked, cacheThemeCss, refForDeck } = await import('./theme-refs.mjs');
-    const { MarketplaceError, configHome } = await import('./marketplace.mjs');
-    const shipped = parseShipped(ref);
-    if (!shipped && !parseRef(ref)) return json(400, { ok: false, error: 'which theme? — a shipped name, or name@marketplace' });
-    const before = readDeck();
-    let deckRef = ref, source = null;
-    // A shipped theme needs no resolving and no check — it is decklight's own,
-    // and passed the contract when it shipped. Marking it says only that the
-    // deck carries it when it travels.
-    if (on && !shipped) {
-      const r = resolveThemeRef(ref);
-      let css;
-      if (r.file) css = readFileSync(r.file, 'utf8');
-      else if (r.remote) {
-        const { fetchTheme } = await import('./theme.mjs');
-        try { css = await fetchTheme(r.remote); }
-        catch (e) { return json(502, { ok: false, error: `could not read ${r.remote}: ${oneline(e)}` }); }
-      } else {
-        // An entry this machine knows but whose files are not here is a state
-        // `marketplace update` fixes (409); one it has never heard of is 404.
-        const status = r.entry && r.entry.type !== 'theme' ? 400 : r.entry ? 409 : 404;
-        return json(status, { ok: false, error: r.missing });
-      }
-      const { validateTheme } = await import('../tools/theme-check.mjs');
-      const check = validateTheme(css);
-      if (!check.ok) {
-        // The deck is left byte-for-byte unchanged.
-        return json(400, { ok: false, error: `${r.name} fails the theme contract`, problems: check.errors ?? [] });
-      }
-      if (r.remote) cacheThemeCss(configHome(), r.marketplace, r.name, css);
-      source = r.source ?? null;
-      deckRef = refForDeck(before, r.name, r.local, source);
-    }
-    let out;
-    try { out = setMarked(before, deckRef, on, { source }); }
-    catch (e) {
-      if (e instanceof MarketplaceError) return json(409, { ok: false, error: e.message });
-      throw e;
-    }
-    if (out.changed) {
-      history.record(before);   // Z takes a mark back like any other edit
-      // The picker asks for `quiet`: it shows the new mark itself and stays
-      // open. Everyone else — the export card's "mark and carry on", which
-      // resumes across the reload — gets the reload.
-      if (req.quiet === true) quietWrite = out.html;
-      writeDeck(out.html);
-      console.log(`  theme: ${on ? 'marked' : 'unmarked'} ${deckRef}`);
-    }
-    return json(200, { ok: true, ref: deckRef, marked: on, changed: out.changed, ...history.counts() });
-  }
-  // Every design system every registered marketplace offers, each saying
-  // whether this deck references it (SPEC DESIGN_SYSTEMS) — the palette's
-  // "Design systems…" list. Cache-only, like the theme browse above.
-  async function designSystemBrowseRoute({ json }) {
-    const { marketplaceDesignSystems, designSystemRefs, resolveDesignSystemRef } = await import('./design-system-refs.mjs');
-    const { markedSources } = await import('./theme-refs.mjs');
-    const { systems, stale, unfetched } = marketplaceDesignSystems();
-    const html = readDeck();
-    const sources = markedSources(html);
-    // what the deck references, as THIS machine names the catalog
-    const used = new Set(designSystemRefs(html).map((r) => {
-      const hit = resolveDesignSystemRef(r, undefined, { source: sources[r.marketplace] ?? null });
-      return `${r.name}@${hit.local ?? r.marketplace}`;
-    }));
-    return json(200, { ok: true, systems: systems.map((s) => ({ ...s, used: used.has(s.qualified) })), stale, unfetched, cacheOnly: true });
-  }
-
-  /**
-   * Reference a design system from this deck, or drop it (SPEC
-   * DESIGN_SYSTEMS) — the twin of the theme mark below it. The package runs
-   * through `decklight design-system gate` first, so the command line and
-   * this route refuse by the same code; the deck gains or loses one entry in
-   * its config block as one undo entry.
-   */
-  async function designSystemMarkRoute({ body, json }) {
-    const req = JSON.parse(body || '{}');
-    const ref = typeof req.ref === 'string' ? req.ref.trim() : '';
-    const on = req.used !== false && req.marked !== false;
-    const { parseRef, refForDeck } = await import('./theme-refs.mjs');
-    const { resolveDesignSystemRef, setDesignSystem, designSystemRefs } = await import('./design-system-refs.mjs');
-    const { checkDir } = await import('./design-system.mjs');
-    const { MarketplaceError, recordInstall, loadRegistry, configHome } = await import('./marketplace.mjs');
-    if (!parseRef(ref)) return json(400, { ok: false, error: 'which design system? — name@marketplace' });
-    const before = readDeck();
-    let deckRef = ref, source = null, manifest = null, local = null;
-    if (on) {
-      const r = resolveDesignSystemRef(ref);
-      if (!r.dir) {
-        const status = r.entry && r.entry.type !== 'design-system' ? 400 : r.entry ? 409 : 404;
-        return json(status, { ok: false, error: r.missing });
-      }
-      const verdict = checkDir(r.dir);
-      if (!verdict.ok) {
-        // the deck is left byte-for-byte unchanged
-        return json(400, { ok: false, error: `${r.ref} fails the design-system check`, problems: verdict.problems.map((p) => `${p.file}${p.line ? ` line ${p.line}` : ''}: ${p.msg}`) });
-      }
-      source = r.source ?? null;
-      manifest = verdict.manifest;
-      local = r.local;
-      deckRef = refForDeck(before, r.name, r.local, source);
-      if (!designSystemRefs(before).some((x) => x.ref === deckRef)) {
-        recordInstall({ type: 'design-system', name: r.name, marketplace: r.local, version: r.entry.version ?? null,
-          commit: loadRegistry(configHome()).marketplaces?.[r.local]?.commit ?? null });
-      }
-    } else {
-      // the deck's own spelling, whatever this machine calls the catalog
-      const p = parseRef(ref);
-      deckRef = designSystemRefs(before).find((x) => x.ref === ref || x.name === p.name)?.ref ?? ref;
-    }
-    let out;
-    try { out = setDesignSystem(before, deckRef, on, { source }); }
-    catch (e) {
-      if (e instanceof MarketplaceError) return json(409, { ok: false, error: e.message });
-      throw e;
-    }
-    // Its themes and fonts come with it (SPEC DESIGN_SYSTEMS, #642) — in the
-    // same write, so the whole thing is ONE undo — unless the author held ⇧
-    // (recommended: false). The look is offered, and applied only when asked.
-    let html = out.html, plan = null, look = null;
-    if (on && manifest) {
-      const deps = await import('./design-system-deps.mjs');
-      plan = deps.planRecommended(html, { manifest, local });
-      if (req.recommended !== false) {
-        html = deps.writePlan(html, plan);
-        for (const inst of deps.plannedInstalls(plan)) recordInstall(inst);
-      }
-      look = deps.lookOf(html, req.recommended !== false ? plan
-        : { ...plan, items: plan.items.filter((it) => it.status === 'already' || it.status === 'stack') });
-      if (req.apply === true && look.differs) html = deps.applyLook(html, look);
-      look.phrase = deps.lookPhrase(look, plan);
-    }
-    const changed = html !== before;
-    if (changed) {
-      history.record(before);   // Z takes it back like any other edit
-      if (req.quiet === true) quietWrite = html;
-      writeDeck(html);
-      console.log(`  design system: ${on ? 'referenced' : 'dropped'} ${deckRef}`);
-    }
-    const pulled = plan && req.recommended !== false ? plan.items.map(({ kind, rec, ref: r2, status, why, cmd, family }) => ({ kind, rec, ref: r2, status, why, cmd, family })) : [];
-    return json(200, { ok: true, ref: deckRef, used: on, changed, pulled, look, ...history.counts() });
-  }
-
-  /**
-   * Give the deck the look a design system it uses was drawn for (SPEC
-   * DESIGN_SYSTEMS, #642): its first recommended theme and font, bringing any
-   * that are missing — one edit, one undo, so Z puts the old look back and
-   * keeps the design system. The twin of `decklight design-system apply`.
-   */
-  async function designSystemApplyRoute({ body, json }) {
-    const req = JSON.parse(body || '{}');
-    const { designSystemRefs, resolveDesignSystemRef } = await import('./design-system-refs.mjs');
-    const { markedSources, parseRef } = await import('./theme-refs.mjs');
-    const { checkDir } = await import('./design-system.mjs');
-    const { recordInstall } = await import('./marketplace.mjs');
-    const deps = await import('./design-system-deps.mjs');
-    const before = readDeck();
-    const p = parseRef(String(req.ref ?? ''));
-    const hit = designSystemRefs(before).find((x) => x.ref === req.ref || x.name === (p?.name ?? req.ref));
-    if (!hit) return json(404, { ok: false, error: `this deck does not use ${req.ref}` });
-    const r = resolveDesignSystemRef(hit, undefined, { source: markedSources(before)[hit.marketplace] ?? null });
-    if (!r.dir) return json(409, { ok: false, error: r.missing });
-    const verdict = checkDir(r.dir);
-    if (!verdict.ok) return json(409, { ok: false, error: `${hit.ref} no longer passes its check` });
-    const plan = deps.planRecommended(before, { manifest: verdict.manifest, local: r.local });
-    let html = deps.writePlan(before, plan);
-    const look = deps.lookOf(html, plan);
-    if (look.differs) html = deps.applyLook(html, look);
-    look.phrase = deps.lookPhrase(look, plan);
-    // recorded even when the deck is unchanged: a dependency already there
-    // takes the catalog's version now, as `design-system apply` does (#653)
-    for (const inst of deps.plannedInstalls(plan)) recordInstall(inst);
-    if (html !== before) {
-      history.record(before);
-      writeDeck(html);
-      console.log(`  design system: applied ${look.title}'s look — ${look.phrase || 'already worn'}`);
-    }
-    return json(200, { ok: true, ref: hit.ref, changed: html !== before, look, ...history.counts() });
-  }
-
-  // Every font every registered marketplace offers (SPEC FONTS), each saying
-  // whether this deck references it, with the faces a preview needs — the
-  // font picker's marketplace rows. Cache-only, like the theme browse.
-  /**
-   * GET /deck/edit/export/estimate?kind=bundle — how big an export would be, before
-   * it is written. Only the bundle has one today: the file without its audio
-   * (`base`), and what each way of carrying the narration's recorded audio
-   * would add (cli/bundle-audio.mjs), so the bundle card can say "Opus — ≈ 2.1
-   * MB" before anybody chooses. `audio` is null for a deck with no recorded
-   * audio on this disk.
-   */
-  /**
-   * Where slide N lives in the file, for the inspector (`I`, PRESENTING): the
-   * slide's lines, each authored top-level child's lines by the same raw index
-   * the element routes use, and what `decklight check` would say about it.
-   * Read-only, and only the static half of the check: the render half needs a
-   * browser and takes seconds, and the panel asks on every slide change.
-   */
-  async function inspectRoute({ url, json }) {
-    const { sectionRanges, staticFindings } = await import('./check.mjs');
-    const html = readDeck();
-    const ranges = sectionRanges(html);
-    const slide = Number(url.searchParams.get('slide'));
-    if (!Number.isInteger(slide) || slide < 1 || slide > ranges.length) {
-      return json(400, { ok: false, error: `no slide ${url.searchParams.get('slide') ?? ''} — the deck has ${ranges.length}`.trim() });
-    }
-    // 1-based line of an offset: the newlines before it, plus one
-    const breaks = [];
-    for (let i = html.indexOf('\n'); i !== -1; i = html.indexOf('\n', i + 1)) breaks.push(i);
-    const lineAt = (at) => {
-      let lo = 0, hi = breaks.length;
-      while (lo < hi) { const mid = (lo + hi) >> 1; if (breaks[mid] < at) lo = mid + 1; else hi = mid; }
-      return lo + 1;
-    };
-    const span = (start, end) => [lineAt(start), lineAt(Math.max(start, end - 1))];
-    const range = ranges[slide - 1];
-    const { parts, idx } = locateSlide(html, slide);
-    const segAt = parts.slice(0, idx).join('').length;
-    let blocks = [];
-    try {
-      blocks = sectionChildRanges(parts[idx]).map((r) => ({ tag: r.tag, lines: span(segAt + r.start, segAt + r.end) }));
-    } catch { /* a malformed section still has its own lines */ }
-    const findings = staticFindings(html, { dir: dirname(deckPath) })
-      .filter((f) => f.slide === slide)
-      .map(({ level, rule, message }) => ({ level, rule, message }));
-    return json(200, { ok: true, file: basename(deckPath), lines: span(range.start, range.end), blocks, findings });
-  }
-
-  async function exportEstimateRoute({ url, json }) {
-    const kind = url.searchParams.get('kind');
-    if (kind !== 'bundle') return json(400, { ok: false, error: `no estimate for ${kind ?? 'that'} — only a bundle has one` });
-    const theme = url.searchParams.get('theme');
-    if (theme != null && !THEME_NAME.test(theme)) return json(400, { ok: false, error: 'the theme is a theme name' });
-    const { bundleMain } = await import('./bundle.mjs');
-    const estimate = (argv) => bundleMain([deckPath, ...argv], { estimate: true });
-    try {
-      // in the theme on screen, as the export will be — or, when that one
-      // cannot be bundled yet (the export asks to mark it first), in the
-      // deck's own: an estimate a theme's stylesheet away is still one
-      let r;
-      try { r = await estimate(theme ? ['--theme', theme] : []); } catch (e) {
-        if (!theme || !(e instanceof CommandError)) throw e;
-        r = await estimate([]);
-      }
-      return json(200, { ok: true, base: r.base, audio: r.audio });
-    } catch (e) {
-      if (!(e instanceof CommandError)) throw e;
-      return json(409, { ok: false, error: e.message.split('\n')[0] });
-    }
-  }
-
-  async function fontBrowseRoute({ json }) {
-    const { marketplaceFonts, fontRefs, resolveFontRef } = await import('./font-refs.mjs');
-    const { markedSources } = await import('./theme-refs.mjs');
-    const { fonts, stale, unfetched } = marketplaceFonts();
-    const html = readDeck();
-    const sources = markedSources(html);
-    const used = new Set(fontRefs(html).map((r) => {
-      const hit = resolveFontRef(r, undefined, { source: sources[r.marketplace] ?? null });
-      return `${r.name}@${hit.local ?? r.marketplace}`;
-    }));
-    return json(200, { ok: true, fonts: fonts.map((f) => ({ ...f, used: used.has(f.qualified) })), stale, unfetched, cacheOnly: true });
-  }
-
-  /**
-   * Reference a font from this deck, or drop it (SPEC FONTS) — the twin of
-   * the design-system mark above: `font gate` first, one config entry, one
-   * undo. `use: true` also makes it the deck's default font. `quiet` writes
-   * without the reload: the picker previews the face itself, and stays open.
-   */
-  async function fontMarkRoute({ body, json }) {
-    const req = JSON.parse(body || '{}');
-    const ref = typeof req.ref === 'string' ? req.ref.trim() : '';
-    const on = req.used !== false && req.marked !== false;
-    const { parseRef, refForDeck } = await import('./theme-refs.mjs');
-    const { resolveFontRef, setFont, fontRefs } = await import('./font-refs.mjs');
-    const { checkFontDir } = await import('./font.mjs');
-    const { MarketplaceError, recordInstall, loadRegistry, configHome } = await import('./marketplace.mjs');
-    if (!parseRef(ref)) return json(400, { ok: false, error: 'which font? — name@marketplace' });
-    const before = readDeck();
-    let deckRef = ref, source = null;
-    if (on) {
-      const r = resolveFontRef(ref);
-      if (!r.dir) {
-        const status = r.entry && r.entry.type !== 'font' ? 400 : r.entry ? 409 : 404;
-        return json(status, { ok: false, error: r.missing });
-      }
-      const verdict = checkFontDir(r.dir);
-      if (!verdict.ok) {
-        return json(400, { ok: false, error: `${r.ref} fails the font check`, problems: verdict.problems.map((p) => `${p.file}${p.line ? ` line ${p.line}` : ''}: ${p.msg}`) });
-      }
-      source = r.source ?? null;
-      deckRef = refForDeck(before, r.name, r.local, source);
-      if (!fontRefs(before).some((x) => x.ref === deckRef)) {
-        recordInstall({ type: 'font', name: r.name, marketplace: r.local, version: r.entry.version ?? null,
-          commit: loadRegistry(configHome()).marketplaces?.[r.local]?.commit ?? null });
-      }
-    } else {
-      const p = parseRef(ref);
-      deckRef = fontRefs(before).find((x) => x.ref === ref || x.name === p.name)?.ref ?? ref;
-    }
-    let out;
-    try { out = setFont(before, deckRef, on, { source, use: req.use === true }); }
-    catch (e) {
-      if (e instanceof MarketplaceError) return json(409, { ok: false, error: e.message });
-      throw e;
-    }
-    if (out.changed) {
-      history.record(before);
-      if (req.quiet === true) quietWrite = out.html;
-      writeDeck(out.html);
-      console.log(`  font: ${on ? 'referenced' : 'dropped'} ${deckRef}${on && req.use === true ? ' (the deck\'s default)' : ''}`);
-    }
-    return json(200, { ok: true, ref: deckRef, used: on, changed: out.changed, ...history.counts() });
-  }
-
-  // `/deck/edit/theme/add` was 0.9.0's name for installing from Browse. A deck that
-  // carries its OWN copy of the runtime still asks for it; it means "mark".
-  const themeAddRoute = ({ body, json }) =>
-    themeMarkRoute({ body: JSON.stringify({ ref: JSON.parse(body || '{}').ref, marked: true }), json });
-
-  /**
-   * The marketplace theme on screen that this deck does not mark, as a
-   * reference — or null. An export or a publish of an unmarked theme would
-   * come out in a theme the deck does not carry; the card asks first
-   * (`409 { unmarked }`), and marking is one more press.
-   */
-  async function unmarkedOnScreen(theme, { carried = false } = {}) {
-    if (!theme) return null;
-    const html = readDeck();
-    const { markedRefs, markedShipped, marketplaceThemes, shippedThemes } = await import('./theme-refs.mjs');
-    if (shippedThemes().includes(theme)) {
-      // A render shows a shipped theme without carrying it — every install has
-      // it. A BUNDLE carries only what the deck marks, plus the theme it opens
-      // on: one it opens on in some other theme is a question first (Gilles'
-      // rule), so the file never leaves carrying a theme nobody chose to send.
-      if (!carried) return null;
-      return markedShipped(html).includes(theme) || theme === configTheme(html) ? null : theme;
-    }
-    if (markedRefs(html).some((r) => r.name === theme)) return null;
-    if (new RegExp(`<style\\b[^>]*\\bdata-theme\\s*=\\s*["']${theme}["']`, 'i').test(html)) return null;
-    return marketplaceThemes().themes.find((t) => t.name === theme)?.qualified ?? null;
   }
 
   // ── the engine wizard (ENGINES#WIZARD) ─────────────────────────────
@@ -3359,302 +2661,6 @@ export async function editMain(args, { onListen = null, client } = {}) {
     return json(200, { ok: true, tracks: seen });
   }
 
-  // ── hand-over: the files this deck can be written out as, and publishing ───
-
-  /**
-   * Write the deck out as a file, for the palette's hand-over rows
-   * (PRESENTING) — `{ kind }`, one of EXPORT_KINDS.
-   *
-   * `decklight pptx` and `decklight pdf` need Node and a headless Chrome,
-   * so the deck cannot do this itself — the same reason `A` asks the
-   * server to run an agent. The work is the commands' own `main`s,
-   * unchanged, so what a row writes is exactly what the command line
-   * writes.
-   *
-   * Four things this route owes the session it is running inside:
-   *
-   * - it must not TAKE THE SERVER DOWN. `chromeBin` exits the process when
-   *   there is no browser — correct for a one-shot command, fatal here, so
-   *   Chrome is resolved with the non-fatal `findChrome` first and a machine
-   *   without one gets a sentence instead of a dead edit server.
-   * - it must not run twice at once. Two exports write the same path
-   *   through two browsers; the second caller is told to wait. ONE flag for
-   *   every kind, deliberately: two different exports at once is still two
-   *   browsers on one machine, and the second would only be slower.
-   * - it must not block. Both `main`s are async all the way down (pptx
-   *   serves the deck from THIS process while Chrome fetches it; pdf is
-   *   async so the session stays answerable while Chrome prints), so live
-   *   reload, the SSE stream and every other route keep answering while a
-   *   slide renders. That is also why a row can say "rendering…" and mean it.
-   * - it must SAY WHERE IT IS. An export is tens of seconds, so each slide
-   *   is announced on the `export` channel of the same SSE stream the agent
-   *   chip rides, and the deck rewrites its one progress row from it.
-   */
-  async function exportRoute({ url, body, json }) {
-    const req = JSON.parse(body || '{}');
-    const kind = req.kind ?? 'pptx';
-    const job = EXPORT_KINDS[kind];
-    if (!job) {
-      return json(400, { ok: false, error: `not a file this server writes: ${kind} — try ${Object.keys(EXPORT_KINDS).join(', ')}` });
-    }
-    // The theme on screen, which the render is told because it cannot see the
-    // browser's pick (#547): a name — what `--theme` takes — or, for a theme
-    // that lives only in that browser, its tokens as `--gen` takes them
-    // (base64url JSON, the form `?gen=` loads; the runtime vets every token).
-    if (req.theme != null && !(typeof req.theme === 'string' && THEME_NAME.test(req.theme))) {
-      return json(400, { ok: false, error: 'the theme is a theme name' });
-    }
-    if (req.gen != null && !(typeof req.gen === 'string' && GEN_THEME.test(req.gen))) {
-      return json(400, { ok: false, error: 'the generated theme is base64url, at most 16 KB' });
-    }
-    if (req.theme != null && req.gen != null) return json(400, { ok: false, error: 'one theme — a name or a generated one' });
-    if (kind === 'bundle') {
-      // A bundle EMBEDS its themes, and a generated one is tokens in this
-      // browser with no file to embed. Bundling in the configured theme
-      // instead would hand over a file that does not look like the screen.
-      if (req.gen != null) {
-        return json(400, { ok: false, error: 'a generated theme lives only in this browser — save it (⌃⇧T) and add it with decklight theme add to bundle it' });
-      }
-      if (alreadyOneFile(readDeck())) {
-        return json(409, { ok: false, error: 'this deck is already one file — send it as it is' });
-      }
-    }
-    const unmarked = await unmarkedOnScreen(req.theme, { carried: kind === 'bundle' });
-    if (unmarked) return json(409, { ok: false, unmarked, error: `${unmarked} is not marked for this deck` });
-    const themed = req.theme ? ['--theme', req.theme] : req.gen ? ['--gen', req.gen] : [];
-    if (kind === 'video') {
-      const bad = videoExportProblem(req, dirname(deckPath));
-      if (bad) return json(400, { ok: false, error: bad });
-    }
-    if (exporting) return json(409, { ok: false, error: 'an export is already running' });
-    const { findChrome } = await import('../tools/chrome.mjs');
-    // every file but the bundle is a render; the bundle launches no browser
-    if (kind !== 'bundle' && !findChrome()) {
-      return json(503, { ok: false, error: 'no Chrome found — install one, or point $CHROME at it' });
-    }
-    exporting = true;
-    const started = Date.now();
-    console.log(`  export: ${basename(deckPath)} → ${job.what}${req.slides ? ` of slides ${req.slides}` : ''}`
-      + `${req.synthesize ? `, voiced by ${req.synthesize.engine} into ${req.synthesize.dir}/` : ''} …`);
-    broadcast('export', { state: 'start', kind, what: job.what });
-    try {
-      let out, code, reason = null, subs = null;
-      if (kind === 'video') {
-        const { videoOut, videoProgress, voiceoverProgress, subtitlesOut } = await import('../tools/video.mjs');
-        out = videoOut(deckPath, req.slides || null, req.format || 'mp4');
-        subs = req.subtitles === 'file' ? subtitlesOut(out, req.format || 'mp4') : null;
-        // Two phases, each told apart on the channel: voicing is minutes on a
-        // cloud engine, and a row that said "rendering" through all of it would
-        // read as stuck on slide one.
-        if (req.synthesize) {
-          ({ code, reason } = await runTool('voiceover', await voiceoverArgv(req),
-            voiceoverProgress((n, of) => broadcast('export', { state: 'slide', kind, phase: 'voice', n, of }))));
-        }
-        if (!code) {
-          const narration = req.synthesize?.dir ?? req.narration ?? null;
-          ({ code, reason } = await runTool('video', [deckPath, '-o', out, ...themed,
-            ...(req.slides ? ['--slides', req.slides] : []),
-            ...(req.format ? ['--format', req.format] : []),
-            ...(req.quality ? ['--quality', req.quality] : []),
-            ...(req.subtitles ? ['--subtitles', req.subtitles] : []),
-            ...(narration ? ['--narration', resolve(dirname(deckPath), narration)] : req.silent ? ['--no-narration'] : []),
-            // the card showed the track as recorded from older notes and it was picked anyway (#536)
-            ...(req.allowStale === true ? ['--allow-stale'] : [])],
-          videoProgress((n, of) => broadcast('export', { state: 'slide', kind, phase: 'render', n, of }))));
-        }
-      } else if (kind === 'bundle') {
-        // The CLI's own name for the file, beside the deck, so the row and
-        // `decklight bundle` write the same one; `audio` is its --audio
-        // ('original', 'aac' or 'opus'), the recorded voice carried inside.
-        // bundleMain returns nothing on success and throws a sentence on a
-        // refusal — the catch below says it.
-        const { bundleMain } = await import('./bundle.mjs');
-        const { AUDIO_CHOICES } = await import('./bundle-audio.mjs');
-        out = join(dirname(deckPath), `${basename(deckPath).replace(/\.html?$/i, '')}-standalone.html`);
-        code = (await bundleMain([deckPath, '-o', out, ...(req.theme ? ['--theme', req.theme] : []),
-          ...(AUDIO_CHOICES.includes(req.audio) ? ['--audio', req.audio] : [])])) ?? 0;
-      } else if (kind === 'pptx') {
-        const { pptxMain, pptxOut } = await import('./pptx-export.mjs');
-        out = pptxOut(deckPath);
-        code = await pptxMain([deckPath, ...themed], {
-          log: (line) => console.log(`  ${line}`),
-          onSlide: (n, of) => broadcast('export', { state: 'slide', kind, n, of }),
-        });
-      } else {
-        const { pdfMain, pdfOut } = await import('./pdf.mjs');
-        out = pdfOut(deckPath, null, job.variant);
-        code = await pdfMain([deckPath, ...themed, ...(job.variant ? [`--${job.variant}`] : [])]);
-      }
-      const file = relative(process.cwd(), out) || basename(out);
-      const seconds = Math.round((Date.now() - started) / 100) / 10;
-      if (code !== 0) {
-        broadcast('export', { state: 'done', kind, ok: false });
-        return json(500, { ok: false, error: reason ?? 'the export refused — see the edit server\'s output' });
-      }
-      // A render with nothing spoken writes no subtitles and says so; the deck
-      // is told of a file only when there is one to open.
-      const voiced = {
-        ...(req.synthesize ? { voiced: req.synthesize.dir } : {}),
-        ...(subs && existsSync(subs) ? { subtitles: relative(process.cwd(), subs) || basename(subs) } : {}),
-      };
-      broadcast('export', { state: 'done', kind, ok: true, file, seconds, ...voiced });
-      return json(200, { ok: true, kind, what: job.what, file, seconds, ...voiced });
-    } catch (e) {
-      // A render that hangs or a Chrome that dies is the export's problem,
-      // never the session's: the message goes back to the palette and the
-      // server carries on serving the deck.
-      console.log(`  export: ${job.what} failed — ${oneline(e)}`);
-      broadcast('export', { state: 'done', kind, ok: false, error: oneline(e) });
-      return json(500, { ok: false, error: oneline(e) });
-    } finally {
-      exporting = false;
-    }
-  }
-
-  /**
-   * `decklight video` (and `decklight narrate` before it, when the export
-   * voices its slides), run as CHILDREN rather than through their `main`s like
-   * the other exports: both end in `process.exit` on every refusal, and each
-   * would take this session down or freeze it. A child keeps that where it
-   * belongs, and its output is read line by line for the progress it already
-   * prints.
-   *
-   * Served from the same root `pptx` picks: the current directory when the deck
-   * is under it, its own directory otherwise.
-   */
-  function runTool(name, argv, onLine) {
-    const script = fileURLToPath(new URL(`../tools/${name}.mjs`, import.meta.url));
-    const cwd = deckPath.startsWith(process.cwd() + sep) ? process.cwd() : dirname(deckPath);
-    return new Promise((done) => {
-      const child = spawn(process.execPath, [script, ...argv], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-      let pending = '', err = '';
-      child.stdout.on('data', (chunk) => {
-        pending += chunk;
-        for (let i; (i = pending.indexOf('\n')) >= 0;) {
-          const line = pending.slice(0, i);
-          pending = pending.slice(i + 1);
-          console.log(`  ${line}`);
-          onLine(line);
-        }
-      });
-      child.stderr.on('data', (chunk) => { err += chunk; process.stdout.write(String(chunk).replace(/^/gm, '  ')); });
-      child.on('error', (e) => done({ code: 1, reason: oneline(e) }));
-      child.on('close', (code) => {
-        // the command's own refusal is the sentence the deck shows
-        const said = err.split('\n').map((l) => l.trim()).filter(Boolean);
-        const prefix = `decklight ${name}:`;
-        const refusal = said.findLast((l) => l.startsWith(prefix)) ?? said.at(-1);
-        done({ code, reason: code === 0 ? null : (refusal?.replace(prefix, '').trim() ?? null) });
-      });
-    });
-  }
-
-  /**
-   * argv for voicing an export: the live voice the deck is speaking with, as
-   * `decklight narrate` spells it. The deck sends what only it knows — the
-   * engine and model the bridge answered with, the voice and tone picked in V —
-   * and the rest comes from where the bridge itself reads it (the environment,
-   * then ~/.config/decklight/tts.json for the same engine), so a sentence
-   * already heard live is a cache hit here and not a second bill.
-   */
-  async function voiceoverArgv({ slides, synthesize: s }) {
-    const { loadTtsConfig } = await import('../tools/tts-setup.mjs');
-    const { piperModelDir } = await import('../tools/tts-engines.mjs');
-    const saved = loadTtsConfig();
-    const savedFor = saved?.engine === s.engine ? saved : null;
-    const project = process.env.GOOGLE_CLOUD_PROJECT ?? saved?.project;
-    const dataDir = savedFor?.dataDir ?? (s.engine === 'piper' ? piperModelDir() : null);
-    return [deckPath, '-o', resolve(dirname(deckPath), s.dir), '--engine', s.engine,
-      ...(s.voice ? ['--voice', s.voice] : []),
-      ...(s.style ? ['--style', s.style] : []),
-      ...(s.model ? ['--tts-model', s.model] : []),
-      ...(savedFor?.format ? ['--tts-format', savedFor.format] : []),
-      ...(dataDir ? ['--data-dir', dataDir] : []),
-      ...(project && (s.engine === 'gemini' || s.engine === 'chirp') ? ['--project', project] : []),
-      ...(slides ? ['--slides', slides] : [])];
-  }
-
-  /**
-   * Publish the deck — and, before that, say where to (PRESENTING).
-   *
-   * The one row in the palette that reaches OFF this machine. Everything
-   * else the deck can ask this server for writes a file beside it; this
-   * pushes a page the world can read, and `Z` does not take that back. So
-   * it is two routes, not one: the deck asks for the PLAN, shows a person
-   * the remote and the URL, and only posts after a second, deliberate
-   * press. The arming lives in the deck, not here — an unarmed POST
-   * publishes, exactly as the command line does, because a confirmation
-   * belongs to the surface that can show somebody what they are agreeing
-   * to.
-   *
-   * `GIT_TERMINAL_PROMPT=0` matters more here than anywhere else: publish
-   * pushes with a synchronous git, so a credential prompt would not be
-   * asking anybody anything — it would hang the write-mode session on a
-   * terminal nobody is looking at.
-   */
-  async function publishPlanRoute({ json }) {
-    if (!gitOn) return json(409, { ok: false, error: 'git is off for this session — there is nothing to publish from' });
-    const remote = remoteState(root);
-    if (!remote.url) {
-      return json(409, { ok: false, error: `nowhere to publish to — ${remoteLine(remote) || remote.state}` });
-    }
-    const { pagesUrl } = await import('./publish.mjs');
-    // Whether it COULD sign is part of the plan, not a failure after the
-    // fact: publish signs by default and refuses rather than publishing
-    // unsigned (INTEGRITY), and the deck would otherwise show somebody a
-    // URL, take their confirmation, and only then say it cannot.
-    //
-    // The SENTENCE is built here, not in the deck. The runtime must never
-    // so much as name the signing client (test/sign.test.mjs greps src/
-    // and dist/ for it — the invariant is that the browser never reaches
-    // for it), so the server hands over words the deck only has to show.
-    const { loadClient, INSTALL_HINT } = await import('./sign.mjs');
-    const canSign = Boolean(await loadClient());
-    return json(200, {
-      ok: true, remote: remote.remote, branch: 'gh-pages',
-      url: pagesUrl(remote.url), bundled: !alreadyOneFile(readDeck()),
-      signing: canSign,
-      why: canSign ? null : `publish signs the deck first, and that client is not installed — ${INSTALL_HINT}`,
-    });
-  }
-
-  async function publishRoute({ body, json }) {
-    if (!gitOn) return json(409, { ok: false, error: 'git is off for this session — there is nothing to publish from' });
-    if (publishing) return json(409, { ok: false, error: 'a publish is already running' });
-    // The theme on screen is the one the page opens on (SPEC THEME_DISTRIBUTION)
-    // — the same question the export card answers, asked the same way.
-    const { theme = null } = JSON.parse(body || '{}');
-    if (theme != null && !(typeof theme === 'string' && THEME_NAME.test(theme))) {
-      return json(400, { ok: false, error: 'the theme is a theme name' });
-    }
-    const unmarked = await unmarkedOnScreen(theme);
-    if (unmarked) return json(409, { ok: false, unmarked, error: `${unmarked} is not marked for this deck` });
-    publishing = true;
-    const before = process.env.GIT_TERMINAL_PROMPT;
-    process.env.GIT_TERMINAL_PROMPT = '0';
-    console.log(`  publish: ${basename(deckPath)} → gh-pages …`);
-    try {
-      const { publishMain } = await import('./publish.mjs');
-      // A deck that is already one file has nothing to flatten, and the
-      // bundler rightly refuses it — the same two cases `decklight
-      // publish` has, decided here rather than made the presenter's
-      // problem. Everything else is the command's own default, signature
-      // included.
-      const oneFile = alreadyOneFile(readDeck());
-      const args = [deckPath, ...(oneFile ? ['--no-bundle'] : theme ? ['--theme', theme] : [])];
-      const r = await publishMain(args);
-      console.log(`  publish: ${r.url ?? `${r.remote} ${r.branch}`}`);
-      return json(200, { ok: true, url: r.url ?? null, branch: r.branch, remote: r.remote, commit: r.commit });
-    } catch (e) {
-      console.log(`  publish: refused — ${oneline(e)}`);
-      return json(500, { ok: false, error: oneline(e) });
-    } finally {
-      process.env.GIT_TERMINAL_PROMPT = before ?? '';
-      if (before === undefined) delete process.env.GIT_TERMINAL_PROMPT;
-      publishing = false;
-    }
-  }
-
   // ── AI agents — the one-shot editing task behind A ───────────────────────
 
   // Remember which agent A should reach for (#125, SPEC AGENT_UNITS). A
@@ -3814,34 +2820,11 @@ export async function editMain(args, { onListen = null, client } = {}) {
     'POST /deck/edit/undo': undoRedoRoute,
     'POST /deck/edit/redo': undoRedoRoute,
 
-    'GET /deck/edit/commit': commitStatusRoute,
-    'POST /deck/edit/commit': commitRoute,
-    'POST /deck/edit/commit/subject': commitSubjectRoute,
-    'POST /deck/edit/commit/dismiss': commitDismissRoute,
-    'POST /deck/edit/commit/plan': commitPlanRoute,
-    'POST /deck/edit/commit/split': commitSplitRoute,
-    'POST /deck/edit/commit/tag': commitTagRoute,
-    'POST /deck/edit/commit/push': commitPushRoute,
-    'GET /deck/edit/history': historyRoute,
-    'GET /deck/edit/history/at': deckAtRoute,
-    'GET /deck/edit/history/changes': historyChangesRoute,
-    'POST /deck/edit/restore': restoreRoute,
-
     // the owner's half of a review (REVIEW): registered here alone, beside
     // the routes both servers share
     'GET /deck/review/incoming': reviewIncomingRoute,
     'GET /deck/review/at': reviewAtRoute,
 
-    'POST /deck/edit/theme': themeRoute,
-    'POST /deck/edit/brand-themes': brandThemesRoute,
-    'GET /deck/edit/theme/browse': themeBrowseRoute,
-    'POST /deck/edit/theme/add': themeAddRoute,
-    'POST /deck/edit/theme/mark': themeMarkRoute,
-    'GET /deck/edit/design-system/browse': designSystemBrowseRoute,
-    'POST /deck/edit/design-system/mark': designSystemMarkRoute,
-    'POST /deck/edit/design-system/apply': designSystemApplyRoute,
-    'GET /deck/edit/font/browse': fontBrowseRoute,
-    'POST /deck/edit/font/mark': fontMarkRoute,
     'GET /deck/edit/wizard': wizardSchemaRoute,
     'POST /deck/edit/wizard': wizardConfigureRoute,
     'POST /deck/edit/wizard/forget': wizardForgetRoute,
@@ -3849,12 +2832,6 @@ export async function editMain(args, { onListen = null, client } = {}) {
 
     'POST /deck/edit/narration/record': recordRoute,
     'GET /deck/edit/narration/tracks': tracksRoute,
-
-    'POST /deck/edit/export': exportRoute,
-    'GET /deck/edit/export/estimate': exportEstimateRoute,
-    'GET /deck/edit/inspect': inspectRoute,
-    'GET /deck/edit/publish/plan': publishPlanRoute,
-    'POST /deck/edit/publish': publishRoute,
 
     'POST /deck/edit/agent': agentRoute,
     'POST /deck/edit/agent/prefer': agentPreferRoute,
@@ -3876,6 +2853,41 @@ export async function editMain(args, { onListen = null, client } = {}) {
     // a notes save updates every page in place: no reload for that write
     quiet: (html) => { quietWrite = html; },
     broadcast: (event, data) => clients.broadcast(event, data),
+  });
+
+  // The deck's look is a file of its own too (cli/edit-look.mjs): the theme
+  // pick and the brand-themes switch, and browsing and marking what the
+  // marketplaces offer a deck to wear — themes, design systems, fonts. They
+  // want the deck's text and the two ways of writing it, the undo stack, the
+  // event channel, and the quiet-write latch, and nothing else of editMain's.
+  registerLookRoutes(routes, {
+    readDeck, applyEdit, writeDeck, history, broadcast,
+    // a quiet pick or mark updates the page that asked: no reload for it
+    quiet: (html) => { quietWrite = html; },
+  });
+
+  // Handing the deck over is a third (cli/edit-handover.mjs): export, the
+  // bundle estimate, the inspector's read, and publish. None of them edits
+  // the deck; they read it, write files beside it or push it, and own their
+  // own in-flight flags.
+  registerHandoverRoutes(routes, {
+    readDeck, deckPath, root, broadcast,
+    gitOn: () => gitOn,
+  });
+
+  // And git (cli/edit-git.mjs): the commit window and the deck's history. The
+  // commit bookkeeping stays here, because the timer, the agent's commits and
+  // the exit commit share it; the routes reach it through what is handed in,
+  // and the `let`s among it only through getters and setters.
+  registerGitRoutes(routes, {
+    readDeck, history, broadcast, deckPath, deckRel, root,
+    gitOn: () => gitOn,
+    agentPref: () => agentPref,
+    subjectsOff, describer,
+    commitState, measureDirty, resetEpisode, alsoNow, alsoRels, attrRel,
+    pendingAttr: () => pendingAttr,
+    clearPendingAttr: () => { pendingAttr = null; },
+    dismissNag: () => { nagDismissed = true; },
   });
 
   // The routes that run BEFORE the shared body read, and the only reason the
