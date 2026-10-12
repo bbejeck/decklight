@@ -23,7 +23,7 @@ import { createAuthoring } from './authoring.js';
 import { createEditBar } from './editbar.js';
 import { createSources } from './sources.js';
 import { createInspector } from './inspector.js';
-import { createOnboarding, TIPS } from './onboarding.js';
+import { createOnboarding } from './onboarding.js';
 import { createOverflowWatch } from './overflow.js';
 import { createPlaylist } from './playlist.js';
 import { createRangePicker } from './ranges.js';
@@ -43,7 +43,7 @@ import { createConceptsEditor, conceptsOn, conceptSuggestions, markConceptHints 
 import { setupSlideTemplates, isTemplateRef, pageDesignSystems } from './design-system.js';
 import { createFonts } from './fonts.js';
 import { createBleed } from './bleed.js';
-import { readPref, writePref } from './prefs.js';
+import { readPref, readJson, writePref, writeJson } from './prefs.js';
 import { markDensity } from './density.js';
 import { createDeckCheck } from './deckcheck.js';
 import { IS_MAC, UNDO_CHORD, REDO_CHORD } from './undo-chord.js';
@@ -373,7 +373,7 @@ export function init(userConfig = {}) {
   // `?capture` — a render, not a live session (#548). `decklight video`, the
   // pptx export and a plain `shot` load each frame as a one-shot headless
   // Chrome, and everything that exists to talk to a person in the room —
-  // toasts, the voice-over hint, the welcome card and tips, the chevrons —
+  // toasts, the voice-over hint, the welcome card, the chevrons —
   // would otherwise be photographed into the artifact. Not `?embedded`: that
   // is the picker previews' mode and brings their postMessage and pref rules
   // with it; not `?print`: that reveals every build and changes the layout.
@@ -1031,6 +1031,8 @@ export function init(userConfig = {}) {
       // ── Present ─────────────────────────────────────────────────────────
       { label: 'Speaker view — second window', cat: 'Present', hint: '⌥⏎', alias: 'presenter view display timer next slide rehearse popup', run: speakerView },
       { label: 'Fullscreen', cat: 'Present', hint: 'F', run: () => toggleFullscreen() },
+      { label: `${fsChromeHidden() ? 'Show' : 'Hide'} arrows and slide number in fullscreen`, cat: 'Present', hint: '⇧F',
+        alias: 'chevrons controls prev next counter page number chrome clean distraction free', run: () => setFsChrome(!fsChromeHidden()) },
       { label: 'Blackout', cat: 'Present', hint: 'B', run: toggleBlackout },
       { label: `Pen ${hud.annotator?.tool === 'pen' ? 'off' : 'on'} — draw on the slide`, cat: 'Present', hint: 'W', alias: 'ink annotate draw scribble marker highlight', run: () => toggleInk('pen') },
       { label: `Laser pointer ${hud.annotator?.tool === 'laser' ? 'off' : 'on'}`, cat: 'Present', hint: '⇧W', alias: 'ink dot glow point at', run: () => toggleInk('laser') },
@@ -1097,10 +1099,6 @@ export function init(userConfig = {}) {
       { label: 'Debug log', cat: 'Help', alias: 'console events state', run: toggleDebug },
       { label: 'Welcome to Decklight', cat: 'Help', alias: 'onboarding intro getting started first run tour what is this help me', run: onboarding.showWelcome },
       write({ label: 'Editing tour', cat: 'Help', alias: 'onboarding intro getting started first run tour how do I edit write mode gestures', run: onboarding.showEditingTour }),
-      { label: `Tips ${onboarding.status().tipsOn ? 'off' : 'on'}`, cat: 'Help', alias: 'hints teach shortcuts learn stop showing quiet', run: () => onboarding.setTips(!onboarding.status().tipsOn) },
-      // with every tip unread there is nothing to reset
-      onboarding.status().tipsLeft < TIPS.length
-        && { label: 'Reset tips', cat: 'Help', alias: 'hints again start over show all unsee replay', run: onboarding.resetTips },
       // ── Preferences ─────────────────────────────────────────────────────
       // `config` and `version` find it too; `version` is what somebody is
       // usually after in here.
@@ -1220,6 +1218,8 @@ export function init(userConfig = {}) {
   /** The rows the panel shows. Exposed on the instance so a headless probe can
    *  assert the version without opening an overlay. A row with no `run` is a
    *  FACT, not a disabled command: it is shown plainly, never greyed out. */
+  // Voice speed in Settings walks these; `<` and `>` still step by 0.25.
+  const VOICE_SPEEDS = [0.75, 1, 1.25, 1.5, 2];
   function settingsRows() {
     return [
       // ⏎ copies it: the version goes into a bug report, and a number you
@@ -1232,6 +1232,24 @@ export function init(userConfig = {}) {
       // every press made a two-way switch cost three keys a turn.
       ...(printMode ? [] : [{ label: 'Display', value: displayFill ? 'fill screen' : deckRatio(),
         hint: '⏎ switches', stays: true, run: () => setDisplay(!displayFill) }]),
+      // The presenter's knobs, here as well as in the palette: the palette is
+      // where you DO a thing, Settings is where you see how the deck is set
+      // up and change it in one place. Each is remembered per deck already;
+      // this is the view of what is remembered.
+      ...(printMode ? [] : [
+        { label: 'Arrows and slide number in fullscreen', value: fsChromeHidden() ? 'hidden' : 'shown', hint: '⏎ switches · ⇧F', stays: true, run: () => setFsChrome(!fsChromeHidden()) },
+        { label: 'Clock', value: hud.status().clockOn ? 'on' : 'off', hint: '⏎ switches', stays: true, run: () => toggleClock() },
+        { label: 'Progress bar', value: hud.status().progressOn ? 'on' : 'off', hint: '⏎ switches', stays: true, run: () => toggleProgress() },
+        { label: 'Captions', value: narration.status().captionsOn ? 'on' : 'off', hint: '⏎ switches', stays: true, run: () => toggleCaptions() },
+        { label: 'Voice speed', value: `${narration.status().rate}×`, hint: '⏎ cycles', stays: true, run: () => {
+          const rate = narration.status().rate;
+          const next = VOICE_SPEEDS.find((v) => v > rate + 1e-6) ?? VOICE_SPEEDS[0];
+          changeNarrRate(next - rate);
+        } },
+      ]),
+      // write mode only: the bar is editing's face, hidden or shown per deck
+      ...(editmode?.available() ? [{ label: 'Editing bar', value: editbar.hidden() ? 'hidden' : 'shown',
+        hint: '⏎ switches', stays: true, run: () => editbar.toggleHidden() }] : []),
       // write mode only: Push lives in the commit window, which only an edit
       // server has
       ...(editmode?.available() ? [{ label: 'Push tags', value: editmode.pushTags() ? 'with the branch' : 'off',
@@ -1923,6 +1941,20 @@ export function init(userConfig = {}) {
   document.addEventListener('fullscreenchange', () => {
     if (fsBtn) fsBtn.innerHTML = document.fullscreenElement ? TC_ICON.unfull : TC_ICON.full;
   });
+  // The arrows and the slide number, in fullscreen (⇧F, Settings, palette).
+  // Shown by default, as they always were; hidden, a fullscreen talk is the
+  // slides and nothing else. Remembered per deck, like the clock. Only
+  // fullscreen is affected: out of it the arrows are how a mouse moves the
+  // deck, and the number is how an author knows where they are.
+  const FS_CHROME_KEY = 'decklight-fs-chrome:' + location.pathname;
+  const fsChromeHidden = () => root.classList.contains('fs-chrome-hidden');
+  function setFsChrome(hidden, { quiet = false } = {}) {
+    root.classList.toggle('fs-chrome-hidden', hidden);
+    writePref(FS_CHROME_KEY, hidden ? 'hidden' : null);
+    if (!quiet) toast(hidden ? 'arrows and slide number hidden in fullscreen' : 'arrows and slide number shown in fullscreen');
+    debugLog('nav', `fullscreen chrome ${hidden ? 'hidden' : 'shown'}`);
+  }
+  if (readPref(FS_CHROME_KEY) === 'hidden') setFsChrome(true, { quiet: true });
   function syncSoundBtn() {
     if (!soundBtn) return;
     const on = narration.status().narrating;
@@ -2210,6 +2242,7 @@ export function init(userConfig = {}) {
       <tr><td>M</td><td>comments — yours and every review's, grouped by who said them, ⏎ jumps</td></tr>
       <tr><td>⇧M</td><td>leave a comment on the slide you are looking at</td></tr>
       <tr><td>F / ⌘⏎ / Ctrl+Enter</td><td>fullscreen (⌘⏎ is the present chord; the bar and the commit chip leave with it)</td></tr>
+      <tr><td>⇧F</td><td>show / hide the arrows and the slide number in fullscreen</td></tr>
       <tr><td>T</td><td>theme picker (type to filter)</td></tr>
       <tr><td>/</td><td>command palette — find, themes, everything (“Welcome to Decklight” reopens the intro)</td></tr>
       <tr><td>G</td><td>slide finder (live preview)</td></tr>
@@ -2465,7 +2498,7 @@ export function init(userConfig = {}) {
       // M reads what people said; ⇧M says something — the same split every
       // other shift-variant here makes (the your-voice recorder records, the synthesized recorder the record dialog).
       case 'm': case 'M': if (e.shiftKey) review.compose(); else review.open(); break;
-      case 'f': case 'F': toggleFullscreen(); break;
+      case 'f': case 'F': if (e.shiftKey) setFsChrome(!fsChromeHidden()); else toggleFullscreen(); break;
       case 'v': case 'V': narration.openPicker(); break;   // everything about the voice
       case 'i': case 'I': inspector?.open(); break;        // (I)nspector: all about this slide, or the selection
       // S — this slide's speaker notes, in the notes editor (write mode); the
@@ -2741,12 +2774,6 @@ export function init(userConfig = {}) {
     close: closeSettings,
     rows: settingsRows,                                     // [{ label, value?, run? }]
   };
-  instance.tips = {                                         // the rotation the palette drives
-    show: onboarding.showTip,
-    reset: onboarding.resetTips,
-    set: onboarding.setTips,
-    status: onboarding.status,
-  };
 
   // ── narration (narration.js) ─────────────────────────────────────────────
   // The deck's voice and everything that hangs off it: recorded and live
@@ -2789,7 +2816,7 @@ export function init(userConfig = {}) {
   const openNarrPicker = narration.openPicker;
   instance.toggleNarration = toggleNarration;               // programmatic start/stop
   // The voice, for API callers and the render harnesses — a curated surface
-  // like `instance.tips` and `instance.restore`, not the whole module.
+  // like `instance.settings` and `instance.restore`, not the whole module.
   instance.narration = {
     playPause: () => narration.playPause(),
     openPicker: (view) => narration.openPicker(view),
@@ -2910,7 +2937,7 @@ export function init(userConfig = {}) {
   // browser picked last time. ↑ reaches them; ← → turn them.
   const VIDEO_PREFS = 'decklight:video-export';
   function videoPrefs() {
-    try { return JSON.parse(localStorage.getItem(VIDEO_PREFS) ?? '{}') ?? {}; } catch { return {}; }
+    return readJson(VIDEO_PREFS, {});
   }
   async function openVideoExport() {
     const voice = await narration.exportSources();
@@ -2928,7 +2955,7 @@ export function init(userConfig = {}) {
       onPick: (slides, { voice: v, format, quality, subtitles }) => {
         // Remembered here and not per deck: a format is a habit of the person
         // exporting, and the voice is not remembered at all — it follows V.
-        try { localStorage.setItem(VIDEO_PREFS, JSON.stringify({ format, quality, subtitles })); } catch { /* private mode */ }
+        writeJson(VIDEO_PREFS, { format, quality, subtitles });   // private mode: not remembered
         editmode.exportDeck('video', { slides, voice: v, format, quality, subtitles });
       },
     });
@@ -2949,8 +2976,7 @@ export function init(userConfig = {}) {
     const { base, audio: a } = est;
     const mb = (n) => (n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`);
     const mins = a.seconds == null ? null : `${Math.floor(a.seconds / 60)}:${String(Math.round(a.seconds % 60)).padStart(2, '0')}`;
-    let last = null;
-    try { last = localStorage.getItem(BUNDLE_AUDIO); } catch { /* private mode */ }
+    const last = readPref(BUNDLE_AUDIO);
     choiceCard.open({
       title: 'bundle into one file — and the narration audio?',
       lines: [`${a.files} recorded file${a.files === 1 ? '' : 's'}${mins ? `, ${mins} of voice` : ''}, ${mb(a.bytes)} in ${a.folders}`],
@@ -2962,7 +2988,7 @@ export function init(userConfig = {}) {
       ],
       current: last ?? 'aac',
       onPick: (how) => {
-        try { localStorage.setItem(BUNDLE_AUDIO, how); } catch { /* private mode */ }
+        writePref(BUNDLE_AUDIO, how);   // private mode: not remembered
         editmode.exportDeck('bundle', how === 'none' ? {} : { audio: how });
       },
     });
@@ -3118,7 +3144,7 @@ export function init(userConfig = {}) {
   root.__decklight = instance;
   activeInstance = instance;
   instance._emit('ready', { slides: instance.state.totalSlides });
-  // Last, and after `ready`: the welcome card and the tips are the only chrome
+  // Last, and after `ready`: the welcome card is the only chrome
   // that reads where the hash SENT the deck, and a load that landed on slide 12
   // is a talk in progress, not a first run.
   onboarding.start(target);
